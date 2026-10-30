@@ -1,0 +1,123 @@
+# GitHub Actions：使用云 macOS 编译 iOS 未签名 ipa（无需自己有 Mac）
+#
+# 产物：lx-music-ios-unsigned.ipa（未签名），下载后可在 Windows 上用 Sideloadly 通过 USB
+# 侧载安装到 iPhone（Sideloadly 负责用你自己的 Apple ID 签名）。
+#
+# 为什么用 macos-15 + Xcode 16，而不是最新的 macos-26 / Xcode 26：
+#   - React Native 0.73 是 2023 年底的版本，官方支持窗口是 Xcode 15/16；
+#     在 Xcode 26 上会碰到 fmt / Clang 等一连串已停止维护的编译问题。
+#   - iOS 26 设备**不要求** App 用 iOS 26 SDK 构建（那是 App Store 上传的门槛，
+#     侧载不受限制）。用 iOS 18 SDK 构建的 ipa 在 iOS 26 上可以正常安装运行。
+#   - macos-14 运行器已于 2026-11-02 退役，无法再用它拿 Xcode 15。
+
+name: iOS unsigned ipa
+
+on:
+  workflow_dispatch:
+    inputs:
+      xcode:
+        description: '指定 Xcode 版本（如 16.4，留空自动选最新的 16.x）'
+        required: false
+        default: ''
+  push:
+    branches:
+      - feat_ios_support
+    paths-ignore:
+      - '**.md'
+
+jobs:
+  build-ios:
+    runs-on: macos-15
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Select Xcode
+        run: |
+          set -euo pipefail
+          echo "== 镜像内可用 Xcode =="
+          ls -d /Applications/Xcode*.app || true
+          want="${{ github.event.inputs.xcode }}"
+          if [ -n "$want" ] && [ -d "/Applications/Xcode_${want}.app" ]; then
+            sudo xcode-select -s "/Applications/Xcode_${want}.app"
+          else
+            pick="$(ls -d /Applications/Xcode_16*.app 2>/dev/null | sort -V | tail -1 || true)"
+            if [ -n "$pick" ]; then sudo xcode-select -s "$pick"; fi
+          fi
+          echo "== 实际使用 =="
+          xcodebuild -version
+          xcodebuild -showsdks | grep -i iphoneos || true
+
+      - name: Install npm dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Pin node path for RN build scripts
+        run: |
+          # RN 0.73 的 Hermes 脚本会读 .xcode.env(.local) 里的 NODE_BINARY，
+          # 路径不对就会在 PhaseScriptExecution 阶段失败
+          printf 'export NODE_BINARY=%s\n' "$(command -v node)" > ios/.xcode.env.local
+          cat ios/.xcode.env.local
+
+      - name: Install CocoaPods dependencies
+        run: |
+          set -euo pipefail
+          sudo gem install cocoapods -v 1.16.2 --no-document
+          pod --version
+          cd ios
+          pod install --repo-update
+
+      - name: Build (Release, unsigned)
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -workspace ios/LxMusicMobile.xcworkspace \
+            -scheme LxMusicMobile \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            ARCHS=arm64 \
+            ONLY_ACTIVE_ARCH=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build 2>&1 | tee xcodebuild.log
+
+      - name: Package unsigned ipa
+        run: |
+          set -euo pipefail
+          rm -rf build/Payload
+          mkdir -p build/Payload
+          cp -R build/Build/Products/Release-iphoneos/LxMusicMobile.app build/Payload/
+          # 未签名产物去掉 _CodeSignature，避免 Sideloadly 误判残留签名
+          rm -rf build/Payload/LxMusicMobile.app/_CodeSignature || true
+          cd build
+          zip -qry lx-music-ios-unsigned.ipa Payload
+          ls -lh lx-music-ios-unsigned.ipa
+          unzip -l lx-music-ios-unsigned.ipa | head -20
+
+      - name: Upload ipa
+        uses: actions/upload-artifact@v4
+        with:
+          name: lx-music-ios-unsigned
+          path: build/lx-music-ios-unsigned.ipa
+          retention-days: 14
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: |
+            xcodebuild.log
+            ios/Podfile.lock
+          if-no-files-found: ignore
+          retention-days: 14

@@ -1,0 +1,107 @@
+# Resolve react_native_pods.rb with node to allow for hoisting
+require Pod::Executable.execute_command('node', ['-p',
+  'require.resolve(
+    "react-native/scripts/react_native_pods.rb",
+    {paths: [process.argv[1]]},
+  )', __dir__]).strip
+
+# RN 0.73 模板默认走 min_ios_version_supported（13.4）。
+# Xcode 26 / 27 只接受 iOS 15 及以上的部署目标，13.4 会被判为越界，这里统一抬到 15.0。
+# 目标机型 iPhone 15（iOS 26）远高于该下限，抬高不影响可用性。
+IOS_DEPLOYMENT_TARGET = '15.0'
+
+platform :ios, IOS_DEPLOYMENT_TARGET
+prepare_react_native_project!
+
+# If you are using a `react-native-flipper` your iOS build will fail when `NO_FLIPPER=1` is set.
+# because `react-native-flipper` depends on (FlipperKit,...) that will be excluded
+#
+# To fix this you can also exclude `react-native-flipper` using a `react-native.config.js`
+# ```js
+# module.exports = {
+#   dependencies: {
+#     ...(process.env.NO_FLIPPER ? { 'react-native-flipper': { platforms: { ios: null } } } : {}),
+# ```
+flipper_config = ENV['NO_FLIPPER'] == "1" ? FlipperConfiguration.disabled : FlipperConfiguration.enabled
+
+linkage = ENV['USE_FRAMEWORKS']
+if linkage != nil
+  Pod::UI.puts "Configuring Pod with #{linkage}ally linked Frameworks".green
+  use_frameworks! :linkage => linkage.to_sym
+end
+
+target 'LxMusicMobile' do
+  config = use_native_modules!
+
+  # iOS 侧补齐 Android 自建原生模块（Utils / Crypto / Cache / Lyric / UserApi）
+  # 以本地 Pod 形式接入，避免手改 pbxproj 引入源文件。
+  pod 'LxModules', :path => './LxModules'
+
+  use_react_native!(
+    :path => config[:reactNativePath],
+    # Enables Flipper.
+    #
+    # Note that if you have use_frameworks! enabled, Flipper will not work and
+    # you should disable the next line.
+    :flipper_configuration => flipper_config,
+    # An absolute path to your application root.
+    :app_path => "#{Pod::Config.instance.installation_root}/.."
+  )
+
+  target 'LxMusicMobileTests' do
+    inherit! :complete
+    # Pods for testing
+  end
+
+  # ---------------------------------------------------------------------------
+  # 构建加固：全部针对 RN 0.73 + Xcode 16/26 的已知冲突，且均为幂等操作
+  # （重复 pod install 不会叠加副作用；旧工具链下多数分支自动跳过）
+  # ---------------------------------------------------------------------------
+  post_install do |installer|
+    # https://github.com/facebook/react-native/blob/main/packages/react-native/scripts/react_native_pods.rb#L197-L202
+    react_native_post_install(
+      installer,
+      config[:reactNativePath],
+      :mac_catalyst_enabled => false
+    )
+
+    # (1) RN 0.73.x 在 Release 下会同时产出 folly.framework，报
+    #     "Multiple commands produce '.../folly.framework'"，移除冗余 target 即可。
+    redundant_targets = installer.pods_project.targets.select { |t| t.name == 'RCT-Folly.common' }
+    redundant_targets.each(&:remove_from_project)
+
+    installer.pods_project.targets.each do |target|
+      target.build_configurations.each do |cfg|
+        settings = cfg.build_settings
+
+        # (2) 部署目标兜底：pod 里低于 15.0 的一律抬到 15.0
+        current = settings['IPHONEOS_DEPLOYMENT_TARGET']
+        if current.nil? || current.to_f < IOS_DEPLOYMENT_TARGET.to_f
+          settings['IPHONEOS_DEPLOYMENT_TARGET'] = IOS_DEPLOYMENT_TARGET
+        end
+
+        # (3) Hermes 的 "Replace Hermes for the right configuration" 脚本要在构建期
+        #     写文件，用户脚本沙盒会让它失败（rsync: deny file-read-data）
+        settings['ENABLE_USER_SCRIPT_SANDBOXING'] = 'NO'
+      end
+    end
+
+    # (4) Xcode 26 的 Clang 会声明 __cpp_consteval，使 fmt 走进一条编译不过的分支
+    #     （FMT_USE_CONSTEVAL=1）。在 Xcode 15/16 下该分支不生效，补丁相当于无操作。
+    fmt_base = File.join(installer.sandbox.root.to_s, 'fmt', 'include', 'fmt', 'base.h')
+    if File.exist?(fmt_base)
+      content = File.read(fmt_base)
+      unless content.include?('LX_PATCH_DISABLE_CONSTEVAL')
+        patched = content.gsub(
+          /^(#elif defined\(__cpp_consteval\)\r?\n#\s*define FMT_USE_CONSTEVAL) 1/,
+          "\\1 0 // LX_PATCH_DISABLE_CONSTEVAL"
+        )
+        if patched != content
+          File.chmod(0644, fmt_base)
+          File.write(fmt_base, patched)
+          Pod::UI.puts '[LxModules] fmt: FMT_USE_CONSTEVAL 已关闭（适配新版 Clang）'.green
+        end
+      end
+    end
+  end
+end

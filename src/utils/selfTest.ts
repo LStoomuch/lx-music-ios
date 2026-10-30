@@ -1,0 +1,184 @@
+/**
+ * 启动自检
+ * ---------------------------------------------------------------------------
+ * 目的：交付前无法在 Windows 上真机运行 iOS，因此把「功能是否正确」的判断
+ * 交给设备自己执行——App 启动后会跑一遍关键能力的实际调用，把失败项直接显示出来。
+ *
+ * 原则：
+ *   - 只做「调用 + 校验返回值」，不改动播放器队列、不写业务数据（写入的文件立即删除）；
+ *   - 每一项独立 try/catch + 超时，任一项失败不影响其它项，也不会中断启动；
+ *   - 网络类检查标记为 soft，失败只提示不算错误（可能是网络环境问题）。
+ */
+import { Image, NativeModules } from 'react-native'
+
+import { getWindowSize } from '@/utils/windowSizeTools'
+import { getStatusBarHeight, getSystemLocales } from '@/utils/nativeModules/utils'
+import { readFile, unlink, writeFile, temporaryDirectoryPath } from '@/utils/fs'
+import {
+  AES_MODE,
+  RSA_PADDING,
+  aesDecrypt,
+  aesDecryptSync,
+  aesEncrypt,
+  aesEncryptSync,
+  generateRsaKey,
+  hashSHA1,
+  rsaDecryptSync,
+  rsaEncryptSync,
+} from '@/utils/nativeModules/crypto'
+import { defaultUrl } from '@/config'
+
+export interface SelfTestItem {
+  name: string
+  ok: boolean
+  /** 失败原因 / 通过时的关键值 */
+  detail: string
+  /** 失败也不计入错误总数（例如依赖外网） */
+  soft?: boolean
+}
+
+const withTimeout = <T>(promise: Promise<T>, ms: number, label: string): Promise<T> => new Promise<T>((resolve, reject) => {
+  const timer = setTimeout(() => { reject(new Error(`${label} 超时（${ms}ms）`)) }, ms)
+  promise.then((v) => { clearTimeout(timer); resolve(v) }, (e) => { clearTimeout(timer); reject(e) })
+})
+
+const errText = (err: any) => (err?.message ?? String(err)).split('\n')[0].slice(0, 120)
+
+/** 跑单项检查：内部异常统一转成失败项 */
+const runItem = async(name: string, fn: () => Promise<string> | string, opts: { soft?: boolean, timeout?: number } = {}): Promise<SelfTestItem> => {
+  try {
+    const detail = await withTimeout(Promise.resolve().then(fn), opts.timeout ?? 6000, name)
+    return { name, ok: true, detail: detail || 'ok', soft: opts.soft }
+  } catch (err) {
+    return { name, ok: false, detail: errText(err), soft: opts.soft }
+  }
+}
+
+const resolveDefaultTrackUrl = () => {
+  if (typeof defaultUrl === 'string') return defaultUrl
+  const source = (Image as any).resolveAssetSource(defaultUrl) as { uri?: string } | null
+  return source?.uri
+}
+
+export const runSelfTest = async(): Promise<SelfTestItem[]> => {
+  const items: SelfTestItem[] = []
+
+  items.push(await runItem('窗口尺寸', async() => {
+    const size = await getWindowSize()
+    if (!(size.width > 0 && size.height > 0)) throw new Error(`尺寸异常 ${size.width}x${size.height}`)
+    return `${Math.round(size.width)}x${Math.round(size.height)}`
+  }))
+
+  items.push(await runItem('顶部安全区', async() => {
+    const height = await getStatusBarHeight()
+    if (!(height > 0)) throw new Error('取到 0，标题栏会被灵动岛遮挡')
+    return `${Math.round(height)}pt`
+  }))
+
+  items.push(await runItem('系统语言', async() => {
+    const locales = await getSystemLocales()
+    if (!Array.isArray(locales) || !locales.length) throw new Error('返回空')
+    return locales.join(',')
+  }))
+
+  items.push(await runItem('内置音频资源', async() => {
+    const url = resolveDefaultTrackUrl()
+    if (!url) throw new Error('资源未解析出 uri')
+    if (!/^file:\/\//.test(url)) throw new Error(`不是本地路径：${url}`)
+    return url.split('/').pop() ?? 'ok'
+  }))
+
+  items.push(await runItem('文件读写', async() => {
+    const file = `${temporaryDirectoryPath}/lx-selftest.txt`
+    await writeFile(file, 'lx-music-ios')
+    const content = await readFile(file)
+    await unlink(file)
+    if (content !== 'lx-music-ios') throw new Error(`读回内容不一致：${content}`)
+    return 'ok'
+  }))
+
+  items.push(await runItem('SHA1', async() => {
+    // 标准测试向量："abc" -> a9993e364706816aba3e25717850c26c9cd0d89d
+    const digest = await hashSHA1('abc')
+    if (digest !== 'a9993e364706816aba3e25717850c26c9cd0d89d') throw new Error(`结果错误：${digest}`)
+    return 'ok'
+  }))
+
+  items.push(await runItem('AES(同步)', async() => {
+    const text = '1234567890123456'
+    const key = 'lxmusiclxtestkey'
+    const cipher = aesEncryptSync(text, key, '', AES_MODE.ECB_128_NoPadding)
+    const plain = aesDecryptSync(cipher, key, '', AES_MODE.ECB_128_NoPadding)
+    if (plain !== text) throw new Error(`往返不一致：${plain}`)
+    return 'ok'
+  }))
+
+  items.push(await runItem('AES(异步)', async() => {
+    const text = '洛雪音乐'
+    const key = 'lxmusiclxtestkey'
+    const iv = '1234567890123456'
+    const cipher = await aesEncrypt(text, key, iv, AES_MODE.CBC_128_PKCS7Padding)
+    const plain = await aesDecrypt(cipher, key, iv, AES_MODE.CBC_128_PKCS7Padding)
+    if (plain !== text) throw new Error(`往返不一致：${plain}`)
+    return 'ok'
+  }))
+
+  items.push(await runItem('RSA 往返', async() => {
+    const key = await generateRsaKey()
+    if (!key.publicKey || !key.privateKey) throw new Error('生成密钥为空')
+    const cipher = rsaEncryptSync('lx', key.publicKey, RSA_PADDING.OAEPWithSHA1AndMGF1Padding)
+    const plain = rsaDecryptSync(cipher, key.privateKey, RSA_PADDING.OAEPWithSHA1AndMGF1Padding)
+    if (plain !== 'lx') throw new Error(`往返不一致：${plain}`)
+    return 'ok'
+  }, { timeout: 10000 }))
+
+  items.push(await runItem('缓存统计', async() => {
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-call
+    const size = await (NativeModules as any).CacheModule.getAppCacheSize() as number
+    if (typeof size !== 'number' || Number.isNaN(size)) throw new Error(`返回值异常：${String(size)}`)
+    return `${(size / 1024 / 1024).toFixed(1)} MB`
+  }))
+
+  items.push(await runItem('播放器模块', async() => {
+    const tp = (NativeModules as any).TrackPlayerModule
+    if (!tp) throw new Error('TrackPlayerModule 未注册')
+    // 曾经闪退的方法：必须存在（iOS 只接受 1 个业务参数）
+    if (typeof tp.updateNowPlayingMetadata !== 'function') throw new Error('缺少 updateNowPlayingMetadata')
+    const state = await withTimeout(tp.getState() as Promise<number>, 4000, 'getState')
+    const queue = await withTimeout(tp.getQueue() as Promise<unknown[]>, 4000, 'getQueue')
+    if (typeof state !== 'number') throw new Error(`getState 返回 ${typeof state}`)
+    if (!Array.isArray(queue)) throw new Error('getQueue 未返回数组')
+    return `state=${state} 队列=${queue.length}`
+  }))
+
+  items.push(await runItem('网络', async() => {
+    const controller = new AbortController()
+    const timer = setTimeout(() => { controller.abort() }, 6000)
+    try {
+      const res = await fetch('https://music.163.com/api/search/get/web?s=test&type=1&limit=1', {
+        signal: controller.signal,
+      })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      return `HTTP ${res.status}`
+    } finally {
+      clearTimeout(timer)
+    }
+  }, { soft: true, timeout: 9000 }))
+
+  return items
+}
+
+/** 汇总成一行文本，用于 toast / 日志 */
+export const summarize = (items: SelfTestItem[]) => {
+  const failed = items.filter(i => !i.ok)
+  const hard = failed.filter(i => !i.soft)
+  const passed = items.length - failed.length
+  return {
+    passed,
+    total: items.length,
+    hardFailed: hard.length,
+    text: failed.length
+      ? `自检 ${passed}/${items.length} 通过\n` + failed.map(i => `${i.soft ? '⚠' : '✗'} ${i.name}：${i.detail}`).join('\n')
+      : `自检全部通过 ${passed}/${items.length}`,
+  }
+}

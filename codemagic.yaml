@@ -1,0 +1,74 @@
+# Codemagic 云构建配置（备选方案）：在无 Mac 的情况下产出 iOS 未签名 ipa
+#
+# 优先级说明：
+#   推荐用 GitHub Actions（.github/workflows/ios-unsigned.yml，macos-15 + Xcode 16）。
+#   Codemagic 共享机池按 Apple 的 App Store 提交要求维护 Xcode 版本，目前只保留
+#   Xcode 26.x；React Native 0.73 在该工具链上有较高的编译失败风险（fmt / consteval
+#   等已停止维护的问题），因此这里只作为备选。
+#
+# 使用方式：
+#   1. 把本仓库推到 GitHub（或 GitLab / Bitbucket）
+#   2. 在 https://codemagic.io 用该仓库新建项目，选择 codemagic.yaml 作为构建配置
+#   3. 触发 ios-unsigned 工作流，构建结束后下载 artifact（未签名 ipa）
+#   4. 在 Windows 上用 Sideloadly 通过 USB 侧载到 iPhone（Sideloadly 负责签名）
+
+workflows:
+  ios-unsigned:
+    name: iOS unsigned ipa
+    instance_type: mac_mini_m2
+    max_build_duration: 120
+    environment:
+      node: 20.11.1
+      xcode: 26.4
+      cocoapods: 1.16.2
+      ruby: 3.2.2
+    triggering:
+      events:
+        - push
+      branch_patterns:
+        - pattern: feat_ios_support
+          include: true
+    scripts:
+      - name: Pin node path for RN build scripts
+        script: |
+          printf 'export NODE_BINARY=%s\n' "$(command -v node)" > ios/.xcode.env.local
+          cat ios/.xcode.env.local
+
+      - name: Install npm dependencies
+        script: |
+          npm ci --no-audit --no-fund
+
+      - name: Install CocoaPods dependencies
+        script: |
+          cd ios
+          pod install --repo-update
+
+      - name: Build unsigned ipa
+        script: |
+          set -e
+          xcodebuild \
+            -workspace ios/LxMusicMobile.xcworkspace \
+            -scheme LxMusicMobile \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            ARCHS=arm64 \
+            ONLY_ACTIVE_ARCH=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+
+          rm -rf build/Payload
+          mkdir -p build/Payload
+          cp -R build/Build/Products/Release-iphoneos/LxMusicMobile.app build/Payload/
+          rm -rf build/Payload/LxMusicMobile.app/_CodeSignature || true
+          cd build
+          zip -qry lx-music-ios-unsigned.ipa Payload
+          ls -lh lx-music-ios-unsigned.ipa
+
+    artifacts:
+      - build/lx-music-ios-unsigned.ipa
+      - build/Build/Products/Release-iphoneos/*.app
+      - $HOME/Library/Logs/gym/*.log
