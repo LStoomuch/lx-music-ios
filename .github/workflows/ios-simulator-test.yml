@@ -131,6 +131,37 @@ jobs:
           xcrun simctl install "$UDID" "$SIM_APP"
           echo "安装完成"
 
+          # ---- 预热一次，把「谨防被骗提示」标记为已读 ----
+          # 上游 cheatTip() 读 AsyncStorage 的 @cheat_tip，未读时会弹模态框；
+          # 该框正好盖住首页列表与播放栏（也就是用户反馈问题的那块），
+          # 所以先跑一次让它建好存储目录，再把标记写进去，正式取证时不再弹。
+          xcrun simctl launch "$UDID" "$BUNDLE_ID" > /dev/null 2>&1 || true
+          sleep 6
+          xcrun simctl terminate "$UDID" "$BUNDLE_ID" 2>/dev/null || true
+          CONTAINER=$(xcrun simctl get_app_container "$UDID" "$BUNDLE_ID" data 2>/dev/null || true)
+          MF=$(find "$CONTAINER" -name manifest.json -path '*RCTAsyncLocalStorage*' 2>/dev/null | head -1)
+          echo "manifest=$MF"
+          if [ -z "$MF" ]; then
+            mkdir -p "$CONTAINER/Library/Application Support/RCTAsyncLocalStorage_V1"
+            MF="$CONTAINER/Library/Application Support/RCTAsyncLocalStorage_V1/manifest.json"
+            echo '{}' > "$MF"
+            echo "未找到既有 manifest，已按默认路径新建"
+          fi
+          python3 - "$MF" <<'PY'
+          import io, json, sys
+          p = sys.argv[1]
+          try:
+              data = json.load(io.open(p, encoding='utf-8'))
+          except Exception:
+              data = {}
+          if not isinstance(data, dict):
+              data = {}
+          data['@cheat_tip'] = 'true'
+          io.open(p, 'w', encoding='utf-8').write(json.dumps(data, ensure_ascii=False))
+          print('已写入 @cheat_tip，现有键数 =', len(data))
+          PY
+          cat "$MF" | head -c 400; echo
+
           # ---- 启动并持续抓 stdout/stderr（NSLog 也走这里）----
           xcrun simctl launch --console-pty "$UDID" "$BUNDLE_ID" > artifacts/app-console.log 2>&1 &
           sleep 2
