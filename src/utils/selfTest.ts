@@ -180,40 +180,36 @@ export const runSelfTest = async(): Promise<SelfTestItem[]> => {
   // 历史闪退（NSRangeException index 3 beyond bounds）就发生在「点播放」这一刻，
   // 空闲不点永远测不到，所以必须有这一项。
   // 默认不跑：只有 CI 预置了 @lx_ci_playback 才执行，避免交付版本一启动就出声。
+  //
+  // 注意：必须走 react-native-track-player 的 JS 封装，不能直接调 NativeModules：
+  // 原生 add 声明的是 add(trackDicts, before, resolve, reject) 两个业务参数，
+  // 封装层会自动补 -1；直接传 1 个参数会让桥接层把 resolve 回调错位塞进 before，
+  // 随后 reject 调用到非函数指针，直接 SIGSEGV（实测崩溃栈已确认）。
   items.push(await runItem('播放链路', async() => {
     const flag = await getData<boolean>('@lx_ci_playback').catch(() => null)
     if (flag !== true) return 'skipped（仅 CI 开启）'
-    const tp = (NativeModules as any).TrackPlayerModule
-    if (!tp) throw new Error('TrackPlayerModule 未注册')
     const url = resolveDefaultTrackUrl()
     if (!url) throw new Error('内置音频未解析出 uri')
+    const TrackPlayer = (await import('react-native-track-player')).default
     try {
-      await withTimeout(Promise.resolve(tp.setupPlayer({})), 8000, 'setupPlayer')
+      await withTimeout(TrackPlayer.setupPlayer({}), 8000, 'setupPlayer')
     } catch {
       // 播放器可能已被正常流程初始化，此时重复 setup 会抛错，属预期
     }
-    await withTimeout(Promise.resolve(tp.add([{
+    await withTimeout(Promise.resolve(TrackPlayer.add([{
       id: 'ci-selftest',
       url,
       title: '自检音轨',
       artist: 'CI',
       duration: 2,
     }])), 8000, 'add')
-    await withTimeout(Promise.resolve(tp.play()), 8000, 'play')
+    await withTimeout(Promise.resolve(TrackPlayer.play()), 8000, 'play')
     await new Promise<void>((resolve) => { setTimeout(resolve, 1500) })
-    const state = await withTimeout(Promise.resolve(tp.getState()), 5000, 'getState')
-    // 这个 fork 的 iOS 侧导出的是 getPosition / getDuration，没有 getProgress，
-    // 所以按「getPosition 优先、getProgress 兜底」取位置，避免误报。
-    let position = 0
-    if (typeof tp.getPosition === 'function') {
-      position = Number(await withTimeout(Promise.resolve(tp.getPosition()), 5000, 'getPosition'))
-    } else if (typeof tp.getProgress === 'function') {
-      const progress = await Promise.resolve(tp.getProgress()) as { position?: number }
-      position = Number(progress?.position ?? 0)
-    } else {
-      throw new Error('原生既无 getPosition 也无 getProgress')
-    }
-    if (!(position > 0)) throw new Error(`播放位置未前进：state=${String(state)} pos=${position}`)
+    const state = await withTimeout(Promise.resolve(TrackPlayer.getState()), 5000, 'getState')
+    const position = Number(await withTimeout(Promise.resolve(TrackPlayer.getPosition()), 5000, 'getPosition'))
+    if (!(position > 0)) throw new Error(`播放位置未前进：state=${String(state)} pos=${String(position)}`)
+    // 清理队列，避免这段测试影响后续界面状态
+    try { await Promise.resolve(TrackPlayer.reset()) } catch { /* 忽略 */ }
     return `state=${String(state)} 位置=${position.toFixed(2)}s`
   }, { soft: true, timeout: 25000 }))
 
