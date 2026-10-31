@@ -228,6 +228,20 @@ jobs:
           echo "=========== console 关键字 ==========="
           grep -a -iE "LXSELFTEST|exception|invariant|error|fatal|crash" artifacts/app-console.log | head -80 || echo "（无匹配）"
 
+          # ---- 崩溃报告：Signal 11 这类原生崩溃只有 .ips 里才有调用栈 ----
+          echo "=========== 崩溃报告 ==========="
+          mkdir -p artifacts/crash
+          for f in ~/Library/Logs/DiagnosticReports/*LxMusicMobile* ; do
+            [ -e "$f" ] && cp "$f" artifacts/crash/ && echo "已收集 $(basename "$f")"
+          done
+          ls -1 artifacts/crash 2>/dev/null || echo "（无崩溃报告）"
+          # 只筛进程过滤会漏掉 ReportCrash 与 SpringBoard 的终止记录，这里放宽
+          xcrun simctl spawn "$UDID" log show --last 4m --style compact \
+            --predicate 'process == "LxMusicMobile" OR process == "ReportCrash" OR process == "SpringBoard" OR eventMessage CONTAINS "Unhandled JS"' \
+            > artifacts/app-oslog-wide.txt 2>/dev/null || true
+          echo "=========== 关键行（宽日志）==========="
+          grep -a -iE "Unhandled JS|Fatal|Exception|Signal|crash|terminat" artifacts/app-oslog-wide.txt | tail -30 || echo "（无）"
+
       - name: Upload evidence
         if: always()
         uses: actions/upload-artifact@v4
