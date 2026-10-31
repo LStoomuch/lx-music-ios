@@ -360,6 +360,24 @@ RCT_EXPORT_METHOD(showToast:(NSString *)text
   });
 }
 
+/// 把启动自检的结论落盘 + 走 NSLog 输出。
+///
+/// 为什么需要单独一条通道：Release 构建下 RN 会把 JS 的 console.log 裁掉，
+/// 而 iOS 26 又封掉了 syslog 抓取，于是「自检到底过了没有」在设备上无从得知。
+/// 这里同时做两件事——
+///   1) 写入沙盒 tmp/lx-selftest-result.txt，CI 可用 simctl get_app_container 取回；
+///   2) NSLog 打一条带 BEGIN/END 标记的日志，--console-pty / Console.app 都能直接读。
+RCT_EXPORT_METHOD(writeSelftestResult:(NSString *)text)
+{
+  if (text.length == 0) return;
+
+  NSString *path = [NSTemporaryDirectory() stringByAppendingPathComponent:@"lx-selftest-result.txt"];
+  NSError *error = nil;
+  BOOL written = [text writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:&error];
+  NSLog(@"[LXSELFTEST]BEGIN\n%@\n[LXSELFTEST]END written=%d path=%@ error=%@",
+        text, written, path, error.localizedDescription ?: @"-");
+}
+
 RCT_EXPORT_METHOD(listenWindowSizeChanged)
 {
   dispatch_async(dispatch_get_main_queue(), ^{
