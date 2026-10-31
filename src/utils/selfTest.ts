@@ -202,12 +202,16 @@ export const runSelfTest = async(): Promise<SelfTestItem[]> => {
     await withTimeout(Promise.resolve(tp.play()), 8000, 'play')
     await new Promise<void>((resolve) => { setTimeout(resolve, 1500) })
     const state = await withTimeout(Promise.resolve(tp.getState()), 5000, 'getState')
+    // 这个 fork 的 iOS 侧导出的是 getPosition / getDuration，没有 getProgress，
+    // 所以按「getPosition 优先、getProgress 兜底」取位置，避免误报。
     let position = 0
-    try {
+    if (typeof tp.getPosition === 'function') {
+      position = Number(await withTimeout(Promise.resolve(tp.getPosition()), 5000, 'getPosition'))
+    } else if (typeof tp.getProgress === 'function') {
       const progress = await Promise.resolve(tp.getProgress()) as { position?: number }
       position = Number(progress?.position ?? 0)
-    } catch {
-      // 旧版本没有 getProgress 时降级为只校验状态
+    } else {
+      throw new Error('原生既无 getPosition 也无 getProgress')
     }
     if (!(position > 0)) throw new Error(`播放位置未前进：state=${String(state)} pos=${position}`)
     return `state=${String(state)} 位置=${position.toFixed(2)}s`
