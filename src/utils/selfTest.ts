@@ -105,38 +105,49 @@ export const runSelfTest = async(): Promise<SelfTestItem[]> => {
     return 'ok'
   }))
 
+  // 原生 AES/RSA 的入参契约是 base64，不是裸字符串：
+  // src/plugins/sync/utils.ts 里明文先 btoa 再交给原生，key 本身就是 base64 密钥。
+  // 传裸字符串会被按 base64 解成错误长度的字节（16 个字符 → 12 字节），
+  // 密钥长度不合法时原生直接返回空串。下面按真实契约构造参数。
   items.push(await runItem('AES(同步)', async() => {
-    const text = '1234567890123456'
-    const key = 'lxmusiclxtestkey'
-    const cipher = aesEncryptSync(text, key, '', AES_MODE.ECB_128_NoPadding)
-    const plain = aesDecryptSync(cipher, key, '', AES_MODE.ECB_128_NoPadding)
-    if (plain !== text) throw new Error(`往返不一致：${plain}`)
+    const b64Key = 'bHhtdXNpYzAxMjM0NTY3OA==' // base64('lxmusic012345678')，16 字节
+    const b64Text = 'bHgtc2VsZnRlc3QtMjAyNA==' // base64('lx-selftest-2024')，16 字节
+    const cipher = aesEncryptSync(b64Text, b64Key, '', AES_MODE.ECB_128_NoPadding)
+    if (!cipher) throw new Error('加密返回空，密钥长度或模式不匹配')
+    const back = aesDecryptSync(cipher, b64Key, '', AES_MODE.ECB_128_NoPadding)
+    if (back !== b64Text) throw new Error(`往返不一致：${JSON.stringify(back)}`)
     return 'ok'
   }))
 
   items.push(await runItem('AES(异步)', async() => {
-    const text = '洛雪音乐'
-    const key = 'lxmusiclxtestkey'
-    const iv = '1234567890123456'
-    const cipher = await aesEncrypt(text, key, iv, AES_MODE.CBC_128_PKCS7Padding)
-    const plain = await aesDecrypt(cipher, key, iv, AES_MODE.CBC_128_PKCS7Padding)
-    if (plain !== text) throw new Error(`往返不一致：${plain}`)
+    const b64Key = 'bHhtdXNpYzAxMjM0NTY3OA=='
+    const b64Iv = 'MTIzNDU2Nzg5MDEyMzQ1Ng==' // base64('1234567890123456')
+    const b64Text = 'bHgtc2VsZnRlc3QtMjAyNA=='
+    const cipher = await aesEncrypt(b64Text, b64Key, b64Iv, AES_MODE.CBC_128_PKCS7Padding)
+    if (!cipher) throw new Error('加密返回空')
+    const back = await aesDecrypt(cipher, b64Key, b64Iv, AES_MODE.CBC_128_PKCS7Padding)
+    if (back !== b64Text) throw new Error(`往返不一致：${JSON.stringify(back)}`)
     return 'ok'
   }))
 
   items.push(await runItem('RSA 往返', async() => {
     const key = await generateRsaKey()
     if (!key.publicKey || !key.privateKey) throw new Error('生成密钥为空')
-    const cipher = rsaEncryptSync('lx', key.publicKey, RSA_PADDING.OAEPWithSHA1AndMGF1Padding)
+    const b64Plain = 'bHg=' // base64('lx')
+    const cipher = rsaEncryptSync(b64Plain, key.publicKey, RSA_PADDING.OAEPWithSHA1AndMGF1Padding)
+    if (!cipher) throw new Error('加密返回空')
     const plain = rsaDecryptSync(cipher, key.privateKey, RSA_PADDING.OAEPWithSHA1AndMGF1Padding)
-    if (plain !== 'lx') throw new Error(`往返不一致：${plain}`)
+    if (plain !== 'lx') throw new Error(`往返不一致：${JSON.stringify(plain)}`)
     return 'ok'
   }, { timeout: 10000 }))
 
   items.push(await runItem('缓存统计', async() => {
+    // 原生返回的是字符串形式的字节数（JS 封装层用 Math.trunc 转换），
+    // 刚安装时目录为空、返回 "0" 属于正常值，不能当异常
     // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-call
-    const size = await (NativeModules as any).CacheModule.getAppCacheSize() as number
-    if (typeof size !== 'number' || Number.isNaN(size)) throw new Error(`返回值异常：${String(size)}`)
+    const raw = await (NativeModules as any).CacheModule.getAppCacheSize() as number | string
+    const size = Math.trunc(Number(raw))
+    if (Number.isNaN(size) || size < 0) throw new Error(`返回值异常：${String(raw)}`)
     return `${(size / 1024 / 1024).toFixed(1)} MB`
   }))
 
