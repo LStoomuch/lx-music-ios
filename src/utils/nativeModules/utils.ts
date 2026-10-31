@@ -85,6 +85,19 @@ export const showDiag = (text: string) => {
   }
 }
 
+/**
+ * 仅 iOS 有实现：把自检结论写入沙盒文件并输出原生日志。
+ * Release 构建下 JS 的 console 会被裁剪，CI / 真机排查只能靠这条通道。
+ */
+export const writeSelftestResult = (text: string) => {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
+    UtilsModule.writeSelftestResult?.(text)
+  } catch {
+    // 忽略：Android 上无此方法
+  }
+}
+
 export const onScreenStateChange = (handler: (state: 'ON' | 'OFF') => void): () => void => {
   // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
   const eventEmitter = new NativeEventEmitter(UtilsModule)
