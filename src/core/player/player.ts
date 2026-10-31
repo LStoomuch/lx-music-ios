@@ -230,13 +230,21 @@ const handlePlay = async() => {
   if (!isInitialized()) {
     await checkNotificationPermission()
     void checkIgnoringBatteryOptimization()
-    await playerInitial({
-      volume: settingState.setting['player.volume'],
-      playRate: settingState.setting['player.playbackRate'],
-      cacheSize: settingState.setting['player.cacheSize'] ? parseInt(settingState.setting['player.cacheSize']) : 0,
-      isHandleAudioFocus: settingState.setting['player.isHandleAudioFocus'],
-      isEnableAudioOffload: settingState.setting['player.isEnableAudioOffload'],
-    })
+    try {
+      await playerInitial({
+        volume: settingState.setting['player.volume'],
+        playRate: settingState.setting['player.playbackRate'],
+        cacheSize: settingState.setting['player.cacheSize'] ? parseInt(settingState.setting['player.cacheSize']) : 0,
+        isHandleAudioFocus: settingState.setting['player.isHandleAudioFocus'],
+        isEnableAudioOffload: settingState.setting['player.isEnableAudioOffload'],
+      })
+    } catch (err) {
+      // 初始化失败时继续往下走只会让 add/skip 连带失败，界面停在「加载中」且没有任何提示；
+      // 这里直接复位状态，让用户看到失败而不是假死（原生侧已用浮层展示具体原因）
+      console.log('player init error', err)
+      global.app_event.error()
+      return
+    }
   }
 
   global.lx.isPlayedStop &&= false

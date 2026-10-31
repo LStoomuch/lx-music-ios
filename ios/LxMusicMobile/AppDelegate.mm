@@ -214,7 +214,11 @@ static UIWindowScene *LXActiveWindowScene(void)
 // RCTAssert 只在 DEBUG 生效）。当 JS 传入的参数比原生声明多时，
 // `_argumentBlocks[index]` 会越界抛 NSRangeException 直接闪退，
 // 报错形如：-[__NSArrayM objectAtIndexedSubscript:]: index 3 beyond bounds [0 .. 2]。
-// 这里在调用前做一次校验：不匹配就拦下来并显示出来，避免整个 App 崩掉。
+//
+// 早先的写法是先猜「参数块数量」再决定是否放行，但 RCTModuleMethod 的
+// 方法签名是惰性解析的，猜错就会把所有原生调用一起拦掉（表现为整个 App 假死）。
+// 现在改成「照常调用 + 捕获异常」：正常调用完全不受影响，只有真正会崩的那次
+// 被拦住并显示出来，风险为零。
 
 static void LXInstallModuleMethodArgGuard(void)
 {
@@ -233,36 +237,26 @@ static void LXInstallModuleMethodArgGuard(void)
   SEL methodNameSelector = NSSelectorFromString(@"methodName");
 
   id (^replacement)(id, id, id, NSArray *) = ^id(id self, id bridge, id module, NSArray *arguments) {
-    NSArray *argumentBlocks = nil;
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
     @try {
-      // 先触发一次方法签名解析，否则首次调用时参数块数组还是空的
-      [self performSelector:methodNameSelector];
-      argumentBlocks = [self valueForKey:@"argumentBlocks"];
-    } @catch (__unused NSException *exception) {
-    }
-#pragma clang diagnostic pop
-
-    if (argumentBlocks != nil && arguments.count > argumentBlocks.count) {
+      return ((id (*)(id, SEL, id, id, NSArray *))originalIMP)(self, selector, bridge, module, arguments);
+    } @catch (NSException *exception) {
+      // 走到这里说明该次调用本来会直接杀掉进程；拦下来并把现场显示在屏幕上
       NSString *methodName = @"?";
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-      @try { methodName = [self performSelector:methodNameSelector]; } @catch (__unused NSException *exception) {
+      @try { methodName = [self performSelector:methodNameSelector]; } @catch (__unused NSException *inner) {
       }
 #pragma clang diagnostic pop
 
-      NSString *message = [NSString stringWithFormat:@"参数个数不匹配已拦截\n%@.%@ 收到 %lu 个参数，原生声明 %lu 个",
+      NSString *message = [NSString stringWithFormat:@"原生调用异常已拦截\n%@.%@（%lu 个参数）\n%@",
                            NSStringFromClass([module class]), methodName,
-                           (unsigned long)arguments.count, (unsigned long)argumentBlocks.count];
+                           (unsigned long)arguments.count, exception.reason];
       RCTLogWarn(@"%@", message);
       [[NSNotificationCenter defaultCenter] postNotificationName:@"LXBootOverlayShow"
                                                           object:nil
                                                         userInfo:@{ @"text": message }];
       return nil;
     }
-
-    return ((id (*)(id, SEL, id, id, NSArray *))originalIMP)(self, selector, bridge, module, arguments);
   };
 
   method_setImplementation(method, imp_implementationWithBlock(replacement));

@@ -76,9 +76,10 @@ export const runSelfTest = async(): Promise<SelfTestItem[]> => {
   }))
 
   items.push(await runItem('系统语言', async() => {
-    const locales = await getSystemLocales()
-    if (!Array.isArray(locales) || !locales.length) throw new Error('返回空')
-    return locales.join(',')
+    // getSystemLocales 返回的是 "zh_cn" 这样的字符串（Android/iOS 一致），不是数组
+    const locale = await getSystemLocales()
+    if (typeof locale !== 'string' || !locale.length) throw new Error(`取到空值：${String(locale)}`)
+    return locale
   }))
 
   items.push(await runItem('内置音频资源', async() => {
@@ -144,12 +145,21 @@ export const runSelfTest = async(): Promise<SelfTestItem[]> => {
     if (!tp) throw new Error('TrackPlayerModule 未注册')
     // 曾经闪退的方法：必须存在（iOS 只接受 1 个业务参数）
     if (typeof tp.updateNowPlayingMetadata !== 'function') throw new Error('缺少 updateNowPlayingMetadata')
-    const state = await withTimeout(tp.getState() as Promise<number>, 4000, 'getState')
-    const queue = await withTimeout(tp.getQueue() as Promise<unknown[]>, 4000, 'getQueue')
-    if (typeof state !== 'number') throw new Error(`getState 返回 ${typeof state}`)
-    if (!Array.isArray(queue)) throw new Error('getQueue 未返回数组')
-    return `state=${state} 队列=${queue.length}`
+    if (typeof tp.setupPlayer !== 'function') throw new Error('缺少 setupPlayer')
+    if (typeof tp.add !== 'function') throw new Error('缺少 add')
+    return '方法齐全'
   }))
+
+  // 播放器可能尚未初始化（初始化发生在进入首页后），此时 getState 取值属于
+  // 「预期内的未知」，不能算失败——否则每次启动都会弹一个吓人的错误框。
+  items.push(await runItem('播放器状态', async() => {
+    const tp = (NativeModules as any).TrackPlayerModule
+    if (!tp) throw new Error('TrackPlayerModule 未注册')
+    const state = await withTimeout(Promise.resolve(tp.getState()), 4000, 'getState')
+    const queue = await withTimeout(Promise.resolve(tp.getQueue()), 4000, 'getQueue')
+    if (!Array.isArray(queue)) throw new Error('getQueue 未返回数组')
+    return `state=${String(state)} 队列=${queue.length}`
+  }, { soft: true }))
 
   items.push(await runItem('网络', async() => {
     const controller = new AbortController()

@@ -258,7 +258,9 @@ const updateMetaInfo = async(mInfo: LX.Player.MusicInfo) => {
     artist,
     album: mInfo.album ?? undefined,
     artwork,
-    duration: state.prevDuration || 0,
+    // prevDuration 的初始值是 -1（表示「未知」），直接透传会让 iOS 锁屏/控制中心
+    // 拿到负的总时长，进度条显示异常，这里统一收敛到 0
+    duration: state.prevDuration > 0 ? state.prevDuration : 0,
     lyric: getCurrentFullLyric(mInfo.id),
   }, state.isPlaying)
 }
