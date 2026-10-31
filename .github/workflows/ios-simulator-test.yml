@@ -175,6 +175,11 @@ jobs:
           PY
           cat "$MF" | head -c 400; echo
 
+          # 预热那次也会写自检结果文件，必须先清掉，
+          # 否则正式启动若中途崩溃，读到的会是预热的旧结论（会得出错误判断）
+          rm -f "$CONTAINER/tmp/lx-selftest-result.txt"
+          echo "已清除预热残留的自检文件"
+
           # ---- 启动并持续抓 stdout/stderr（NSLog 也走这里）----
           xcrun simctl launch --console-pty "$UDID" "$BUNDLE_ID" > artifacts/app-console.log 2>&1 &
           sleep 2
