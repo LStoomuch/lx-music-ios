@@ -108,25 +108,28 @@ export const runSelfTest = async(): Promise<SelfTestItem[]> => {
   // 原生 AES/RSA 的入参契约是 base64，不是裸字符串：
   // src/plugins/sync/utils.ts 里明文先 btoa 再交给原生，key 本身就是 base64 密钥。
   // 传裸字符串会被按 base64 解成错误长度的字节（16 个字符 → 12 字节），
-  // 密钥长度不合法时原生直接返回空串。下面按真实契约构造参数。
+  // 密钥长度不合法时原生直接返回空串。
+  // 另外注意方向不对称：加密吃 base64、吐 base64 密文；解密吐的是 UTF-8 明文。
   items.push(await runItem('AES(同步)', async() => {
     const b64Key = 'bHhtdXNpYzAxMjM0NTY3OA==' // base64('lxmusic012345678')，16 字节
-    const b64Text = 'bHgtc2VsZnRlc3QtMjAyNA==' // base64('lx-selftest-2024')，16 字节
+    const expected = 'lx-selftest-2024'
+    const b64Text = 'bHgtc2VsZnRlc3QtMjAyNA==' // base64(expected)，16 字节刚好一块
     const cipher = aesEncryptSync(b64Text, b64Key, '', AES_MODE.ECB_128_NoPadding)
     if (!cipher) throw new Error('加密返回空，密钥长度或模式不匹配')
     const back = aesDecryptSync(cipher, b64Key, '', AES_MODE.ECB_128_NoPadding)
-    if (back !== b64Text) throw new Error(`往返不一致：${JSON.stringify(back)}`)
+    if (back !== expected) throw new Error(`往返不一致：${JSON.stringify(back)}`)
     return 'ok'
   }))
 
   items.push(await runItem('AES(异步)', async() => {
     const b64Key = 'bHhtdXNpYzAxMjM0NTY3OA=='
     const b64Iv = 'MTIzNDU2Nzg5MDEyMzQ1Ng==' // base64('1234567890123456')
+    const expected = 'lx-selftest-2024'
     const b64Text = 'bHgtc2VsZnRlc3QtMjAyNA=='
     const cipher = await aesEncrypt(b64Text, b64Key, b64Iv, AES_MODE.CBC_128_PKCS7Padding)
     if (!cipher) throw new Error('加密返回空')
     const back = await aesDecrypt(cipher, b64Key, b64Iv, AES_MODE.CBC_128_PKCS7Padding)
-    if (back !== b64Text) throw new Error(`往返不一致：${JSON.stringify(back)}`)
+    if (back !== expected) throw new Error(`往返不一致：${JSON.stringify(back)}`)
     return 'ok'
   }))
 
