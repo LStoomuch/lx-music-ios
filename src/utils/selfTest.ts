@@ -27,6 +27,7 @@ import {
   rsaEncryptSync,
 } from '@/utils/nativeModules/crypto'
 import { defaultUrl } from '@/config'
+import { getData } from '@/plugins/storage'
 
 export interface SelfTestItem {
   name: string
@@ -174,6 +175,43 @@ export const runSelfTest = async(): Promise<SelfTestItem[]> => {
     if (!Array.isArray(queue)) throw new Error('getQueue 未返回数组')
     return `state=${String(state)} 队列=${queue.length}`
   }, { soft: true }))
+
+  // 播放链路：真正走一次 setupPlayer → add → play，并校验播放位置在前进。
+  // 历史闪退（NSRangeException index 3 beyond bounds）就发生在「点播放」这一刻，
+  // 空闲不点永远测不到，所以必须有这一项。
+  // 默认不跑：只有 CI 预置了 @lx_ci_playback 才执行，避免交付版本一启动就出声。
+  items.push(await runItem('播放链路', async() => {
+    const flag = await getData<boolean>('@lx_ci_playback').catch(() => null)
+    if (flag !== true) return 'skipped（仅 CI 开启）'
+    const tp = (NativeModules as any).TrackPlayerModule
+    if (!tp) throw new Error('TrackPlayerModule 未注册')
+    const url = resolveDefaultTrackUrl()
+    if (!url) throw new Error('内置音频未解析出 uri')
+    try {
+      await withTimeout(Promise.resolve(tp.setupPlayer({})), 8000, 'setupPlayer')
+    } catch {
+      // 播放器可能已被正常流程初始化，此时重复 setup 会抛错，属预期
+    }
+    await withTimeout(Promise.resolve(tp.add([{
+      id: 'ci-selftest',
+      url,
+      title: '自检音轨',
+      artist: 'CI',
+      duration: 2,
+    }])), 8000, 'add')
+    await withTimeout(Promise.resolve(tp.play()), 8000, 'play')
+    await new Promise<void>((resolve) => { setTimeout(resolve, 1500) })
+    const state = await withTimeout(Promise.resolve(tp.getState()), 5000, 'getState')
+    let position = 0
+    try {
+      const progress = await Promise.resolve(tp.getProgress()) as { position?: number }
+      position = Number(progress?.position ?? 0)
+    } catch {
+      // 旧版本没有 getProgress 时降级为只校验状态
+    }
+    if (!(position > 0)) throw new Error(`播放位置未前进：state=${String(state)} pos=${position}`)
+    return `state=${String(state)} 位置=${position.toFixed(2)}s`
+  }, { soft: true, timeout: 25000 }))
 
   items.push(await runItem('网络', async() => {
     const controller = new AbortController()
