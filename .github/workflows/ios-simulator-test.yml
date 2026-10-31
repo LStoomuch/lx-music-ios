@@ -1,0 +1,212 @@
+# GitHub Actions：在 macOS 运行器内置的 iOS 模拟器里真实启动 App 并取证
+#
+# 为什么需要这条流水线：
+#   iOS 模拟器只能跑在 macOS 上（CoreSimulator + Hypervisor.framework 是系统组件），
+#   Windows 装不了、也绕不过去。但云端 macos-15 运行器自带 Xcode 和模拟器运行时，
+#   于是可以把「装包 → 启动 → 截图 → 录像 → 读日志」整套做完，产物拉回本地审阅。
+#
+# 它能验证什么（和真机行为高度一致的部分）：
+#   - 是否白屏、首页/播放栏是否渲染出来            → 看截图
+#   - 顶部是否有一条不消失的黑条                    → 看截图
+#   - 底部是否持续闪烁                              → 看录像抽帧
+#   - 启动自检 13 项的逐项结果                      → 看 selftest-result.txt / NSLog
+#   - 是否有 JS 异常、原生方法越界、崩溃            → 看 app-console.log / app-oslog.txt
+#
+# 它不能替代什么：
+#   - 音频解码与真实出声（模拟器音频走宿主机，和真机 AVFoundation 路径不同）
+#   - iOS 26 特有行为（模拟器运行时最高到 iOS 18.x）
+#   - 侧载签名、后台播放、锁屏控制中心
+
+name: iOS Simulator smoke test
+
+on:
+  workflow_dispatch:
+    inputs:
+      shot_times:
+        description: '截图时刻（秒，逗号分隔，相对启动）'
+        required: false
+        default: '4,7,11,17,25'
+
+jobs:
+  simulator:
+    runs-on: macos-15
+    timeout-minutes: 90
+    env:
+      BUNDLE_ID: cn.toside.music.mobile
+      SIM_APP: build-sim/Build/Products/Release-iphonesimulator/LxMusicMobile.app
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Select Xcode
+        run: |
+          set -euo pipefail
+          pick="$(ls -d /Applications/Xcode_16*.app 2>/dev/null | sort -V | tail -1 || true)"
+          if [ -n "$pick" ]; then sudo xcode-select -s "$pick"; fi
+          xcodebuild -version
+          echo "=== 可用模拟器运行时 ==="
+          xcrun simctl list runtimes
+
+      - name: Install npm dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Pin node path for RN build scripts
+        run: |
+          printf 'export NODE_BINARY=%s\n' "$(command -v node)" > ios/.xcode.env.local
+          cat ios/.xcode.env.local
+
+      - name: Install CocoaPods dependencies
+        run: |
+          set -euo pipefail
+          sudo gem install cocoapods -v 1.16.2 --no-document
+          pod --version
+          cd ios
+          pod install --repo-update
+
+      # Release 构建才会把 jsbundle 打进包里；Debug 需要 Metro 常驻，不适合 CI。
+      - name: Build for iOS Simulator (Release)
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -workspace ios/LxMusicMobile.xcworkspace \
+            -scheme LxMusicMobile \
+            -configuration Release \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build-sim \
+            ONLY_ACTIVE_ARCH=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build 2>&1 | tee xcodebuild-sim.log
+          echo "=== 产物 ==="
+          ls -d "$SIM_APP"
+          ls "$SIM_APP" | head -20
+          test -f "$SIM_APP/main.jsbundle" || { echo "缺少 main.jsbundle"; exit 1; }
+
+      - name: Boot simulator, launch app, capture evidence
+        env:
+          SHOT_TIMES: ${{ github.event.inputs.shot_times || '4,7,11,17,25' }}
+        run: |
+          set -uo pipefail
+          mkdir -p artifacts
+
+          # ---- 选一台可用的 iPhone 模拟器（取 iOS 运行时版本最高的那台）----
+          UDID=$(python3 - <<'PY'
+          import json, subprocess, sys
+          raw = subprocess.run(['xcrun', 'simctl', 'list', 'devices', 'available', '-j'],
+                               capture_output=True, text=True).stdout
+          data = json.loads(raw)['devices']
+          cands = []
+          for runtime, devs in data.items():
+              if 'iOS' not in runtime:
+                  continue
+              for d in devs:
+                  if str(d.get('name', '')).startswith('iPhone'):
+                      cands.append((runtime, d['udid'], d['name']))
+          if not cands:
+              sys.exit(1)
+          cands.sort(reverse=True)
+          print(cands[0][1])
+          PY
+          ) || { echo "::error::找不到可用的 iPhone 模拟器"; xcrun simctl list devices available; exit 1; }
+
+          echo "UDID=$UDID"
+          xcrun simctl list devices | grep -i "$UDID" || true
+
+          xcrun simctl boot "$UDID" 2>/dev/null || true
+          xcrun simctl bootstatus "$UDID" -b
+
+          # 固定状态栏，两次截图的时间/电量一致，便于逐像素比对
+          xcrun simctl status_bar "$UDID" override \
+            --time "9:41" --batteryState charged --batteryLevel 100 \
+            --cellularBars 4 --wifiBars 3 2>/dev/null || true
+
+          xcrun simctl install "$UDID" "$SIM_APP"
+          echo "安装完成"
+
+          # ---- 启动并持续抓 stdout/stderr（NSLog 也走这里）----
+          xcrun simctl launch --console-pty "$UDID" "$BUNDLE_ID" > artifacts/app-console.log 2>&1 &
+          sleep 2
+
+          # ---- 同步录像，用于判断「底部一直闪」这类动画问题 ----
+          xcrun simctl io "$UDID" recordVideo --codec=h264 --force artifacts/run.mp4 > artifacts/record.log 2>&1 &
+          REC_PID=$!
+
+          # ---- 按计划截图 ----
+          IFS=',' read -ra TIMES <<< "$SHOT_TIMES"
+          prev=0
+          idx=1
+          for t in "${TIMES[@]}"; do
+            gap=$(( t - prev ))
+            [ "$gap" -gt 0 ] && sleep "$gap"
+            prev=$t
+            name=$(printf 'shot-%02d-%02ss.png' "$idx" "$t")
+            if xcrun simctl io "$UDID" screenshot --type=png "artifacts/$name" 2>/dev/null; then
+              echo "截图 $name 成功"
+            else
+              echo "::warning::截图 $name 失败"
+            fi
+            idx=$(( idx + 1 ))
+          done
+
+          # 收尾：停录像
+          kill -INT "$REC_PID" 2>/dev/null || true
+          wait "$REC_PID" 2>/dev/null || true
+          ls -l artifacts/run.mp4 2>/dev/null || echo "::warning::未生成录像"
+
+          # ---- 取回自检结论（原生写入沙盒 tmp）----
+          CONTAINER=$(xcrun simctl get_app_container "$UDID" "$BUNDLE_ID" data 2>/dev/null || true)
+          echo "CONTAINER=$CONTAINER"
+          for i in $(seq 1 15); do
+            if [ -n "$CONTAINER" ] && [ -f "$CONTAINER/tmp/lx-selftest-result.txt" ]; then
+              cp "$CONTAINER/tmp/lx-selftest-result.txt" artifacts/selftest-result.txt
+              break
+            fi
+            sleep 2
+          done
+          echo "=========== 自检结果 ==========="
+          cat artifacts/selftest-result.txt 2>/dev/null || echo "（未取到自检结果文件）"
+
+          # ---- 进程是否还活着 ----
+          echo "=========== 进程状态 ==========="
+          xcrun simctl spawn "$UDID" launchctl list 2>/dev/null | grep -i lxmusic || echo "（未在 launchctl 中找到，可能已退出）"
+
+          # ---- 系统日志 + 控制台关键行 ----
+          xcrun simctl spawn "$UDID" log show --last 3m --style compact \
+            --predicate 'process == "LxMusicMobile"' > artifacts/app-oslog.txt 2>/dev/null || true
+          echo "=========== console 关键字 ==========="
+          grep -a -iE "LXSELFTEST|exception|invariant|error|fatal|crash" artifacts/app-console.log | head -80 || echo "（无匹配）"
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: simulator-evidence
+          path: |
+            artifacts/
+            xcodebuild-sim.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      # 硬失败（✗）才算不通过；⚠ 是依赖外网的软项，不算
+      - name: Assert selftest
+        if: always()
+        run: |
+          f=artifacts/selftest-result.txt
+          if [ ! -f "$f" ]; then
+            echo "::error::没有取到自检结果，App 可能没能启动完成，请看 app-console.log"
+            exit 1
+          fi
+          cat "$f"
+          if grep -q "✗" "$f"; then
+            echo "::error::自检存在硬失败项"
+            exit 1
+          fi
+          echo "::notice::自检无硬失败项"
