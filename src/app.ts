@@ -55,6 +55,11 @@ const scheduleSelfTest = () => {
       const items = await runSelfTest()
       const result = summarize(items)
       console.log('[LXSELFTEST]', result.text)
+      // Release 构建会裁掉上面的 console.log，再走一条原生通道落盘 + NSLog，
+      // 供 CI（iOS 模拟器）和真机侧排查读取每一项的真实结果
+      const { writeSelftestResult } = await import('@/utils/nativeModules/utils')
+      writeSelftestResult(`${result.text}\n--- items ---\n` +
+        items.map(i => `${i.ok ? 'PASS' : (i.soft ? 'WARN' : 'FAIL')}\t${i.name}\t${i.detail}`).join('\n'))
       if (result.hardFailed > 0) {
         Alert.alert(
           `自检未通过（${result.passed}/${result.total}）`,
