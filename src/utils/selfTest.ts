@@ -12,6 +12,7 @@
 import { Image, NativeModules } from 'react-native'
 
 import { getWindowSize } from '@/utils/windowSizeTools'
+import playerState from '@/store/player/state'
 import { getStatusBarHeight, getSystemLocales } from '@/utils/nativeModules/utils'
 import { readFile, unlink, writeFile, temporaryDirectoryPath } from '@/utils/fs'
 import {
@@ -210,7 +211,12 @@ export const runSelfTest = async(): Promise<SelfTestItem[]> => {
       interval: '00:02',
       meta: { songId: filePath, albumName: '', filePath, ext: 'mp3' },
     } as LX.Music.MusicInfoLocal
+    // 先确认内置文件真的能按路径 stat 到，否则本地播放必然静默失败
+    const { existsFile } = await import('@/utils/fs')
+    const fileExists = await existsFile(filePath).catch(() => false)
     await addListMusics(LIST_IDS.DEFAULT, [info], 'top')
+    const { getList } = await import('@/core/list')
+    const inList = getList(LIST_IDS.DEFAULT).some(m => m.id === info.id)
     await playListById(LIST_IDS.DEFAULT, info.id)
     // 内置文件只有 2 秒，播完位置会归零，必须轮询取峰值而不是只采样一次
     const TrackPlayer = (await import('react-native-track-player')).default
@@ -224,7 +230,15 @@ export const runSelfTest = async(): Promise<SelfTestItem[]> => {
       if (Number.isFinite(pos) && pos > position) position = pos
       if (position > 0.6) break
     }
-    if (!(position > 0)) throw new Error(`播放位置未前进：state=${state} pos=${position}`)
+    if (!(position > 0)) {
+      const queue = await withTimeout(Promise.resolve(TrackPlayer.getQueue()), 5000, 'getQueue').catch(() => [])
+      throw new Error(
+        `播放位置未前进：state=${state} pos=${position}` +
+        `｜文件=${fileExists ? '存在' : '缺失'}｜入列表=${inList ? '是' : '否'}` +
+        `｜队列=${Array.isArray(queue) ? queue.length : '?'}` +
+        `｜状态文案=${String(playerState.statusText || '空').slice(0, 40)}`,
+      )
+    }
     return `state=${state} 位置=${position.toFixed(2)}s`
   }, { soft: true, timeout: 40000 }))
 

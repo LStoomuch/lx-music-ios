@@ -253,6 +253,12 @@ jobs:
           echo "=========== 关键行（宽日志）==========="
           grep -a -iE "Unhandled JS|Fatal|Exception|Signal|crash|terminat" artifacts/app-oslog-wide.txt | tail -30 || echo "（无）"
 
+          # 原始系统日志单个 40MB+，打包后连内网下载都会超时；只留关键行，便于取回证据
+          grep -a -iE "playMusic|Skipping to track|Starting/Resuming|Pausing playback|Stopping playback|LXSELFTEST|player init" \
+            artifacts/app-oslog-wide.txt | tail -1500 > artifacts/oslog-key.txt || true
+          rm -f artifacts/app-oslog.txt artifacts/app-oslog-wide.txt
+          echo "证据包体积：$(du -sh artifacts | cut -f1)"
+
       - name: Upload evidence
         if: always()
         uses: actions/upload-artifact@v4
