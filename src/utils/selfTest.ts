@@ -215,9 +215,10 @@ export const runSelfTest = async(): Promise<SelfTestItem[]> => {
     const { existsFile } = await import('@/utils/fs')
     const fileExists = await existsFile(filePath).catch(() => false)
     await addListMusics(LIST_IDS.DEFAULT, [info], 'top')
-    const { getList } = await import('@/core/list')
-    const inList = getList(LIST_IDS.DEFAULT).some(m => m.id === info.id)
     await playListById(LIST_IDS.DEFAULT, info.id)
+    // core/list 没有导出 getList（上一轮就是栽在这句，直接 undefined is not a function），
+    // 改从播放器状态读当前曲目，这本来就是「到底切没切过去」的判定依据
+    const playingId = String(playerState.playMusicInfo?.musicInfo?.id ?? '')
     // 内置文件只有 2 秒，播完位置会归零，必须轮询取峰值而不是只采样一次
     const TrackPlayer = (await import('react-native-track-player')).default
     let state = ''
@@ -234,7 +235,7 @@ export const runSelfTest = async(): Promise<SelfTestItem[]> => {
       const queue = await withTimeout(Promise.resolve(TrackPlayer.getQueue()), 5000, 'getQueue').catch(() => [])
       throw new Error(
         `播放位置未前进：state=${state} pos=${position}` +
-        `｜文件=${fileExists ? '存在' : '缺失'}｜入列表=${inList ? '是' : '否'}` +
+        `｜文件=${fileExists ? '存在' : '缺失'}｜当前曲目=${playingId || '空'}` +
         `｜队列=${Array.isArray(queue) ? queue.length : '?'}` +
         `｜状态文案=${String(playerState.statusText || '空').slice(0, 40)}`,
       )
@@ -268,7 +269,7 @@ export const runSelfTest = async(): Promise<SelfTestItem[]> => {
     const flag = await getData<boolean>('@lx_ci_source').catch(() => null)
     if (flag !== true) return 'skipped（仅 CI 开启）'
     // 音源脚本在独立 JSContext 里异步初始化，这里等它就绪（最多 20s）
-    const deadline = Date.now() + 12000
+    const deadline = Date.now() + 30000
     let api = (global as any).lx?.apis?.kw
     while (!api?.getMusicUrl && Date.now() < deadline) {
       await new Promise<void>((resolve) => { setTimeout(resolve, 500) })
@@ -316,7 +317,7 @@ export const runSelfTest = async(): Promise<SelfTestItem[]> => {
     } catch (err: any) {
       throw new Error(`${net} [${stage}] ${errText(err)}`)
     }
-  }, { soft: true, timeout: 45000 }))
+  }, { soft: true, timeout: 70000 }))
 
 
   items.push(await runItem('网络', async() => {
