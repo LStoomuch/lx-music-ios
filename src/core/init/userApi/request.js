@@ -73,7 +73,7 @@ const blobToBuffer = (blob) => {
 
 export const fetchData = (url, { timeout = 13_000, ...options }) => {
   // console.log('---start---', url)
-
+  const startAt = Date.now()
   const controller = new global.AbortController()
   let id = BackgroundTimer.setTimeout(() => {
     id = null
@@ -108,7 +108,10 @@ export const fetchData = (url, { timeout = 13_000, ...options }) => {
           return resp
         }
       }).catch(err => {
-        // console.log(err, err.code, err.message)
+        // 音源脚本的请求全走这里，原来失败只有一句 "Network request failed"，
+        // 分不清是 DNS、超时、ATS 拦明文还是目标站点拒绝，补上 URL 与耗时便于定位。
+        const cost = Date.now() - startAt
+        err.message = `${err.message} [${(options && options.method) || 'GET'} ${url} ${cost}ms]`
         return Promise.reject(err)
       }).finally(() => {
         if (id == null) return

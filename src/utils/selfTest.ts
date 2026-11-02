@@ -300,11 +300,20 @@ export const runSelfTest = async(): Promise<SelfTestItem[]> => {
         signal: controller.signal,
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      return `HTTP ${res.status}`
+      // 音源脚本会请求 http（明文）接口，而 iOS 的 ATS 可能只放行 https。
+      // 这里顺带探一条明文请求，失败时给出明确归因，避免误判成「音源坏了」。
+      let plain = ''
+      try {
+        const r2 = await fetch('http://search.kuwo.cn/r.s?client=kt&all=test&pn=0&rn=1&encoding=utf8&rformat=json')
+        plain = ` | http=${r2.status}`
+      } catch (err) {
+        plain = ` | http=FAIL(${errText(err)})`
+      }
+      return `HTTP ${res.status}${plain}`
     } finally {
       clearTimeout(timer)
     }
-  }, { soft: true, timeout: 9000 }))
+  }, { soft: true, timeout: 15000 }))
 
   return items
 }
