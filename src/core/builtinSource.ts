@@ -1,5 +1,6 @@
 import { addUserApi, getUserApiList } from '@/utils/data'
 import { getData, saveData } from '@/plugins/storage'
+import { setUserApiList } from '@/core/userApi'
 import { builtinUserApiScript } from '@/config/builtinUserApi'
 import { updateSetting } from './common'
 import settingState from '@/store/setting/state'
@@ -57,6 +58,11 @@ export const ensureBuiltinUserApi = async(): Promise<string | null> => {
   await saveData(SEEDED_KEY, true)
   await updateSetting({ 'common.apiSource': info.id })
   settingState.setting['common.apiSource'] = info.id
+  // 关键：setApiSource → setUserApi 是从 store 的 state.list 里按 id 找源的，
+  // 而 initUserApi 是在本函数之前跑的（那时还没有任何源，列表为空）。
+  // 不同步这份内存列表的话，会直接抛 "api not found"，
+  // 于是「源已经导入了、却永远不生效」，表现仍是点播放没声音。
+  setUserApiList(await getUserApiList())
   builtinSourceDiag.seeded = true
   builtinSourceDiag.picked = info.id
   builtinSourceDiag.reason = 'seeded'
