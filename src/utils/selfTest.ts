@@ -188,57 +188,44 @@ export const runSelfTest = async(): Promise<SelfTestItem[]> => {
   // 随后 reject 调用到非函数指针，直接 SIGSEGV（实测崩溃栈已确认）。
   // 用户反馈的问题恰好发生在「点播放之后」：底部一直闪、没有声音。
   // 所以这条链路必须在设备上真跑一遍：搜索 → 入列表 → 播放 → 读状态与进度。
-  // 播放链路：用内置音频真跑一次 setupPlayer → add → play，验证「到底能不能出声」。
-  // 必须排在「自动播放」之前：自动播放依赖外部音源，失败会留下半截队列污染这里
-  // （上一轮的 state=loading pos=0 就是这么来的，属于测试自身串味，不是真实缺陷）。
-  items.push(await runItem('播放链路', async() => {
+  // 本地播放：走 App 自己的「本地音乐」通道（列表面 → 播放器 → 原生），验证能否真的出声。
+  // 千万不要直接操作原生队列（add/skip）：JS 侧的曲目表会与原生队列脱节，
+  // 事件里的 getCurrentTrackId 取到 undefined，实测会触发 10 万次 stop 的死循环。
+  // 本地音乐不依赖网络，因此不受音源服务地域限制，是最稳的「出声」证据。
+  items.push(await runItem('本地播放', async() => {
     const flag = await getData<boolean>('@lx_ci_playback').catch(() => null)
     if (flag !== true) return 'skipped（仅 CI 开启）'
-    const url = resolveDefaultTrackUrl()
-    if (!url) throw new Error('内置音频未解析出 uri')
+    const assetUri = resolveDefaultTrackUrl()
+    if (!assetUri) throw new Error('内置音频未解析出 uri')
+    const filePath = decodeURIComponent(assetUri.replace(/^file:///////, ''))
+    const { addListMusics } = await import('@/core/list')
+    const { playListById } = await import('@/core/player/player')
+    const { LIST_IDS } = await import('@/config/constant')
+    const info = {
+      id: 'local__lx_selftest',
+      name: '自检音轨',
+      singer: 'CI',
+      source: 'local',
+      interval: '00:02',
+      meta: { songId: filePath, albumName: '', filePath, ext: 'mp3' },
+    } as LX.Music.MusicInfoLocal
+    await addListMusics(LIST_IDS.DEFAULT, [info])
+    await playListById(LIST_IDS.DEFAULT, info.id)
+    // 内置文件只有 2 秒，播完位置会归零，必须轮询取峰值而不是只采样一次
     const TrackPlayer = (await import('react-native-track-player')).default
-    try {
-      await withTimeout(TrackPlayer.setupPlayer({}), 8000, 'setupPlayer')
-    } catch {
-      // 播放器可能已被正常流程初始化，此时重复 setup 会抛错，属预期
-    }
-    // 还原线上真实路径：队列里先放一首，再 add 新曲目 → skip 到它 → play。
-    // 原生 reset() 只是 stop()，并不清空队列、也不设置 currentItem，
-    // 之前 reset 后直接 play 会永远停在 loading（那是用例写错，不是应用缺陷）。
-    await withTimeout(Promise.resolve(TrackPlayer.add([{
-      id: 'ci-dummy',
-      url,
-      title: '占位音轨',
-      artist: 'CI',
-      duration: 2,
-    }])), 8000, 'add(dummy)')
-    await withTimeout(Promise.resolve(TrackPlayer.add([{
-      id: 'ci-selftest',
-      url,
-      title: '自检音轨',
-      artist: 'CI',
-      duration: 2,
-    }])), 8000, 'add')
-    const ciQueue = await withTimeout(Promise.resolve(TrackPlayer.getQueue()), 8000, 'getQueue') as any[]
-    const ciIndex = ciQueue.findIndex((t: any) => t?.id === 'ci-selftest')
-    if (ciIndex < 0) throw new Error(`队列里找不到刚加入的音轨（队列=${ciQueue.length}）`)
-    await withTimeout(Promise.resolve(TrackPlayer.skip(ciIndex)), 8000, 'skip')
-    await withTimeout(Promise.resolve(TrackPlayer.play()), 8000, 'play')
-    // 内置文件只有 2 秒，播完位置可能归零，必须轮询取峰值而不是只采样一次
     let state = ''
     let position = 0
     const deadline = Date.now() + 8000
     while (Date.now() < deadline) {
-      await new Promise<void>((resolve) => { setTimeout(resolve, 400) })
+      await new Promise<void>((resolve) => { setTimeout(resolve, 300) })
       state = String(await withTimeout(Promise.resolve(TrackPlayer.getState()), 5000, 'getState'))
       const pos = Number(await withTimeout(Promise.resolve(TrackPlayer.getPosition()), 5000, 'getPosition'))
       if (Number.isFinite(pos) && pos > position) position = pos
-      if (position > 0.5) break
+      if (position > 0.6) break
     }
-    // 这里不再调用 reset()：它只会 stop()，会让下一项「自动播放」继承 loading 状态
     if (!(position > 0)) throw new Error(`播放位置未前进：state=${state} pos=${position}`)
     return `state=${state} 位置=${position.toFixed(2)}s`
-  }, { soft: true, timeout: 30000 }))
+  }, { soft: true, timeout: 40000 }))
 
   items.push(await runItem('自动播放', async() => {
     const flag = await getData<boolean>('@lx_ci_autoplay').catch(() => null)
