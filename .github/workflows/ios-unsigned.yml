@@ -59,6 +59,11 @@ jobs:
       - name: Install npm dependencies
         run: npm ci --no-audit --no-fund
 
+      # 原生 RNTrackPlayer 的 handleAudioPlayerQueueIndexChange 没有边界检查，
+      # 队列变动时会 SIGTRAP 闪退；postinstall 已挂钩，这里再显式跑一次保证生效。
+      - name: Patch track-player (数组越界闪退)
+        run: node scripts/patch-rntp.js
+
       - name: Pin node path for RN build scripts
         run: |
           # RN 0.73 的 Hermes 脚本会读 .xcode.env(.local) 里的 NODE_BINARY，

@@ -204,8 +204,15 @@ const handlePlayMusic = async(musicInfo: LX.Player.PlayMusic, url: string, time:
       }
     }
 
-    if (queue.length > 2) {
-      void TrackPlayer.remove(Array(queue.length - 2).fill(null).map((_, i) => i)).then(() => list.splice(0, list.length - 2))
+    // 只清理「当前曲目之前」的部分（保留上一首），绝不把正在播放的曲目删掉：
+    // 旧写法按 queue.length - 2 无脑删前面的，当前曲目很可能正好落在删除区间里，
+    // 原生会带着旧索引重发 playback-track-changed（那处没有边界检查，直接 SIGTRAP 闪退），
+    // 同时底部播放栏的歌名/进度会被反复刷新 —— 也就是「一直闪」。
+    const dropCount = trackIndex - 2
+    if (dropCount > 0) {
+      void TrackPlayer.remove(Array(dropCount).fill(null).map((_, i) => i))
+        .then(() => { list.splice(0, Math.min(dropCount, list.length)) })
+        .catch((err: any) => { console.log('trim queue failed', err) })
     }
   } catch (err: any) {
     // 这里如果让异常冒泡，会变成未捕获的 Promise 拒绝：界面停在「加载中」且没有任何提示
