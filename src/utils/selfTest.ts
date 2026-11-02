@@ -217,11 +217,19 @@ export const runSelfTest = async(): Promise<SelfTestItem[]> => {
       typeUrl: {},
       meta: { songId: '228908', albumName: '', picUrl: '', qualitys: [], _qualitys: {} },
     }
-    const res = (await (api.getMusicUrl as any)(musicInfo, '128k').promise) as { url: string }
-    if (!res?.url || !/^https?:/.test(res.url)) throw new Error('返回地址非法：' + String(res?.url).slice(0, 60))
-    const audio = await fetch(res.url, { headers: { Range: 'bytes=0-2047' } })
-    if (!audio.ok && audio.status !== 206) throw new Error('音频不可下载 HTTP ' + audio.status)
-    return `HTTP ${audio.status} ${audio.headers.get('content-type') ?? ''}`
+    // 分阶段定位：音源脚本自己会发起「接口请求 → 二次请求」，最后我们还要下载音频，
+    // 任何一步失败都只报一句 "Network request failed"，必须带上阶段才知道卡在哪。
+    let stage = 'getUrl'
+    try {
+      const res = (await (api.getMusicUrl as any)(musicInfo, '128k').promise) as { url: string }
+      if (!res?.url || !/^https?:/.test(res.url)) throw new Error('返回地址非法：' + String(res?.url).slice(0, 80))
+      stage = 'download'
+      const audio = await fetch(res.url, { headers: { Range: 'bytes=0-2047' } })
+      if (!audio.ok && audio.status !== 206) throw new Error('音频不可下载 HTTP ' + audio.status)
+      return `${res.url.slice(0, 32)}… HTTP ${audio.status} ${audio.headers.get('content-type') ?? ''}`
+    } catch (err: any) {
+      throw new Error(`[${stage}] ${errText(err)}`)
+    }
   }, { soft: true, timeout: 45000 }))
 
   items.push(await runItem('播放链路', async() => {
