@@ -186,6 +186,30 @@ export const runSelfTest = async(): Promise<SelfTestItem[]> => {
   // 原生 add 声明的是 add(trackDicts, before, resolve, reject) 两个业务参数，
   // 封装层会自动补 -1；直接传 1 个参数会让桥接层把 resolve 回调错位塞进 before，
   // 随后 reject 调用到非函数指针，直接 SIGSEGV（实测崩溃栈已确认）。
+  // 用户反馈的问题恰好发生在「点播放之后」：底部一直闪、没有声音。
+  // 所以这条链路必须在设备上真跑一遍：搜索 → 入列表 → 播放 → 读状态与进度。
+  items.push(await runItem('自动播放', async() => {
+    const flag = await getData<boolean>('@lx_ci_autoplay').catch(() => null)
+    if (flag !== true) return 'skipped（仅 CI 开启）'
+    const { search } = await import('@/core/search/music')
+    const list = await search('告白气球', 1, 'kw')
+    if (!list.length) throw new Error('搜索无结果')
+    const { addListMusics } = await import('@/core/list')
+    const { playListById } = await import('@/core/player/player')
+    const { LIST_IDS } = await import('@/config/constant')
+    const target = list[0]
+    await addListMusics(LIST_IDS.DEFAULT, [target])
+    await playListById(LIST_IDS.DEFAULT, target.id)
+    await new Promise<void>((resolve) => { setTimeout(resolve, 6000) })
+    const TrackPlayer = (await import('react-native-track-player')).default
+    const state = await withTimeout(Promise.resolve(TrackPlayer.getState()), 5000, 'getState')
+    const pos = Number(await withTimeout(Promise.resolve(TrackPlayer.getPosition()), 5000, 'getPosition'))
+    const dur = Number(await withTimeout(Promise.resolve(TrackPlayer.getDuration()), 5000, 'getDuration'))
+    const title = `${String(target.name).slice(0, 12)}`
+    if (dur <= 0) throw new Error(`${title} 未加载音频：state=${String(state)} dur=${dur}`)
+    return `${title} state=${String(state)} pos=${pos.toFixed(2)}s dur=${dur.toFixed(1)}s`
+  }, { soft: true, timeout: 60000 }))
+
   items.push(await runItem('音源链路', async() => {
     const flag = await getData<boolean>('@lx_ci_source').catch(() => null)
     if (flag !== true) return 'skipped（仅 CI 开启）'
@@ -217,6 +241,14 @@ export const runSelfTest = async(): Promise<SelfTestItem[]> => {
       typeUrl: {},
       meta: { songId: '228908', albumName: '', picUrl: '', qualitys: [], _qualitys: {} },
     }
+    // 先探一下音源服务端在设备侧是否可达，失败时能区分「网络不通」和「脚本报错」
+    let net = ''
+    try {
+      const ping = await fetch('https://api.music.lerd.dpdns.org/init.conf')
+      net = `init.conf=${ping.status}`
+    } catch (err) {
+      net = `init.conf=FAIL(${errText(err)})`
+    }
     // 分阶段定位：音源脚本自己会发起「接口请求 → 二次请求」，最后我们还要下载音频，
     // 任何一步失败都只报一句 "Network request failed"，必须带上阶段才知道卡在哪。
     let stage = 'getUrl'
@@ -226,9 +258,9 @@ export const runSelfTest = async(): Promise<SelfTestItem[]> => {
       stage = 'download'
       const audio = await fetch(res.url, { headers: { Range: 'bytes=0-2047' } })
       if (!audio.ok && audio.status !== 206) throw new Error('音频不可下载 HTTP ' + audio.status)
-      return `${res.url.slice(0, 32)}… HTTP ${audio.status} ${audio.headers.get('content-type') ?? ''}`
+      return `${net} ${res.url.slice(0, 32)}… HTTP ${audio.status} ${audio.headers.get('content-type') ?? ''}`
     } catch (err: any) {
-      throw new Error(`[${stage}] ${errText(err)}`)
+      throw new Error(`${net} [${stage}] ${errText(err)}`)
     }
   }, { soft: true, timeout: 45000 }))
 
