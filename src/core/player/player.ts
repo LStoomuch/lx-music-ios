@@ -645,7 +645,14 @@ export const pause = async() => {
 /**
  * 停止播放
  */
+// 【临时埋点】定位「stop/pause/seek(0) 每秒上千次」的调用来源，拿到栈就删
+let stopTraceCount = 0
 export const stop = async() => {
+  if (stopTraceCount < 12) {
+    stopTraceCount++
+    const stack = (new Error('trace').stack ?? '').split('\n').slice(1, 7).map(s => s.trim()).join(' <- ')
+    console.log(`[LXSTOP#${stopTraceCount}] ${stack}`)
+  }
   await setStop()
   setTimeout(() => {
     global.app_event.stop()

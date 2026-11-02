@@ -237,7 +237,9 @@ jobs:
           xcrun simctl spawn "$UDID" log show --last 3m --style compact \
             --predicate 'process == "LxMusicMobile"' > artifacts/app-oslog.txt 2>/dev/null || true
           echo "=========== console 关键字 ==========="
-          grep -a -iE "LXSELFTEST|exception|invariant|error|fatal|crash" artifacts/app-console.log | head -80 || echo "（无匹配）"
+          # 循环类问题会灌满 console，这里连同埋点一起抓到 step 日志里，避免下载几十 MB
+          grep -a -iE "LXSELFTEST|LXSTOP|LXSETSTOP|exception|invariant|error|fatal|crash" artifacts/app-console.log | head -60 || echo "（无匹配）"
+          echo "console 行数：$(wc -l < artifacts/app-console.log)，其中 stop=$(grep -a -c 'Stopping playback' artifacts/app-console.log || true)"
 
           # ---- 崩溃报告：Signal 11 这类原生崩溃只有 .ips 里才有调用栈 ----
           echo "=========== 崩溃报告 ==========="

@@ -164,7 +164,14 @@ export const setResource = (musicInfo: LX.Player.PlayMusic, url: string, duratio
 export const setPlay = async() => TrackPlayer.play()
 export const getPosition = async() => TrackPlayer.getPosition()
 export const getDuration = async() => TrackPlayer.getDuration()
+// 【临时埋点】同 player.ts 的 LXSTOP，定位谁是每秒上千次 stop 的发起者，拿到栈即删
+let setStopTraceCount = 0
 export const setStop = async() => {
+  if (setStopTraceCount < 12) {
+    setStopTraceCount++
+    const stack = (new Error('trace').stack ?? '').split('\n').slice(1, 7).map(s => s.trim()).join(' <- ')
+    console.log(`[LXSETSTOP#${setStopTraceCount}] ${stack}`)
+  }
   await TrackPlayer.stop()
   if (!isEmpty()) await TrackPlayer.skipToNext()
 }
