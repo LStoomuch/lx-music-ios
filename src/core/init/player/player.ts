@@ -2,7 +2,6 @@ import { addPlayedList, clearPlayedList } from '@/core/player/playedList'
 import { pause, playNext } from '@/core/player/player'
 import { setStatusText, setIsPlay } from '@/core/player/playStatus'
 // import { resetPlayerMusicInfo } from '@/core/player/playInfo'
-import { setStop } from '@/plugins/player'
 import { delayUpdateMusicInfo } from '@/plugins/player/playList'
 import playerState from '@/store/player/state'
 import settingState from '@/store/setting/state'
@@ -19,6 +18,12 @@ export default async(setting: LX.AppSetting) => {
 
   const handleEnded = () => {
     // setTimeout(() => {
+    // 没有当前曲目时，「播完」这条事件往往来自空队列/被外部停止的播放器，
+    // 此时继续 playNext 只会落到 handleToggleStop 再停一次，形成死循环。
+    if (!playerState.playMusicInfo.musicInfo) {
+      setStatusText(global.i18n.t('player__end'))
+      return
+    }
     if (global.lx.isPlayedStop) {
       setStatusText(global.i18n.t('player__end'))
       return
@@ -34,7 +39,10 @@ export default async(setting: LX.AppSetting) => {
   const setStopStatus = () => {
     setIsPlay(false)
     setStatusText('')
-    void setStop()
+    // 这里绝不能再调用 setStop()：'stop' 本身就是「已经停了」的通知，
+    // 再停一次会连带 skipToNext()；队列为空时会触发 queue-ended →
+    // handleEnded → playNext → 又 stop，形成每秒几十次的
+    // 停止/暂停/归零 循环——用户看到的「下方一直闪、点播放没反应」就是它。
   }
 
   const updatePic = () => {
