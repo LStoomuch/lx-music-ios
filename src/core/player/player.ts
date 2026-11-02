@@ -24,7 +24,7 @@ import { requestMsg } from '@/utils/message'
 import { getRandom } from '@/utils/common'
 import { filterList } from './utils'
 import BackgroundTimer from 'react-native-background-timer'
-import { checkIgnoringBatteryOptimization, checkNotificationPermission, debounceBackgroundTimer } from '@/utils/tools'
+import { checkIgnoringBatteryOptimization, checkNotificationPermission, debounceBackgroundTimer, toast } from '@/utils/tools'
 import { LIST_IDS } from '@/config/constant'
 import { addListMusics, removeListMusics } from '@/core/list'
 import { addDislikeInfo } from '@/core/dislikeList'
@@ -132,6 +132,13 @@ const getMusicPlayUrl = async(musicInfo: LX.Music.MusicInfo | LX.Download.ListIt
   })
 }
 
+// 连续取播放地址失败计数。
+// 旧逻辑每次失败都会 addDelayNextTimeout()（5 秒后自动下一首），
+// 在没有可用音源时会变成「一直闪、一直跳、永远没声音」的死循环。
+// 这里改成：同一次播放尝试里失败两次就停下并给出明确原因。
+let playUrlFailCount = 0
+const isSourceMissingError = (message: string) => /Api is not found|source init failed|api not found/i.test(message)
+
 export const setMusicUrl = (musicInfo: LX.Music.MusicInfo | LX.Download.ListItem, isRefresh?: boolean) => {
   // addLoadTimeout()
   if (!diffCurrentMusicInfo(musicInfo)) return
@@ -139,11 +146,24 @@ export const setMusicUrl = (musicInfo: LX.Music.MusicInfo | LX.Download.ListItem
   global.lx.gettingUrlId = createGettingUrlId(musicInfo)
   void getMusicPlayUrl(musicInfo, isRefresh).then((url) => {
     if (!url) return
+    playUrlFailCount = 0
     setResource(musicInfo, url, playerState.progress.nowPlayTime)
   }).catch((err: any) => {
     console.log(err)
-    setStatusText(err.message as string)
+    const message = (err?.message as string) ?? ''
     global.app_event.error()
+    if (isSourceMissingError(message)) {
+      playUrlFailCount = 0
+      setStatusText(global.i18n.t('player__no_usable_source'))
+      toast(global.i18n.t('player__no_usable_source'), 'long')
+      return
+    }
+    playUrlFailCount++
+    if (playUrlFailCount >= 2) {
+      setStatusText(global.i18n.t('player__get_url_failed_stop'))
+      return
+    }
+    setStatusText(message)
     addDelayNextTimeout()
   }).finally(() => {
     if (musicInfo === playerState.playMusicInfo.musicInfo) {
@@ -248,6 +268,7 @@ const handlePlay = async() => {
   }
 
   global.lx.isPlayedStop &&= false
+  playUrlFailCount = 0
   resetRandomNextMusicInfo()
 
   if (global.lx.restorePlayInfo) {

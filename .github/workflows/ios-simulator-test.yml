@@ -170,6 +170,8 @@ jobs:
           data['@setting_v1'] = json.dumps(st, ensure_ascii=False)
           # CI 专用的播放自检开关（默认不写生产包，这里才打开）
           data['@lx_ci_playback'] = 'true'
+          # 音源链路自检：内置源初始化 → 取真实播放地址 → 校验音频可下载
+          data['@lx_ci_source'] = 'true'
           io.open(p, 'w', encoding='utf-8').write(json.dumps(data, ensure_ascii=False))
           print('已预置 @cheat_tip / @setting_v1(common.isAgreePact) / @lx_ci_playback，现有键数 =', len(data))
           PY

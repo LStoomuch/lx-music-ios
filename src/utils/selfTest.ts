@@ -185,6 +185,35 @@ export const runSelfTest = async(): Promise<SelfTestItem[]> => {
   // 原生 add 声明的是 add(trackDicts, before, resolve, reject) 两个业务参数，
   // 封装层会自动补 -1；直接传 1 个参数会让桥接层把 resolve 回调错位塞进 before，
   // 随后 reject 调用到非函数指针，直接 SIGSEGV（实测崩溃栈已确认）。
+  items.push(await runItem('音源链路', async() => {
+    const flag = await getData<boolean>('@lx_ci_source').catch(() => null)
+    if (flag !== true) return 'skipped（仅 CI 开启）'
+    // 音源脚本在独立 JSContext 里异步初始化，这里等它就绪（最多 20s）
+    const deadline = Date.now() + 20000
+    let api = (global as any).lx?.apis?.kw
+    while (!api?.getMusicUrl && Date.now() < deadline) {
+      await new Promise<void>((resolve) => { setTimeout(resolve, 500) })
+      api = (global as any).lx?.apis?.kw
+    }
+    if (!api?.getMusicUrl) throw new Error(`音源未就绪（${String((global as any).lx?.apis && Object.keys((global as any).lx.apis))}）`)
+    const musicInfo = {
+      songmid: '228908',
+      hash: '228908',
+      name: '自检歌曲',
+      singer: '自检',
+      source: 'kw',
+      interval: '04:29',
+      _types: {},
+      typeUrl: {},
+      meta: { songId: '228908', albumName: '', picUrl: '', qualitys: [], _qualitys: {} },
+    }
+    const res = (await (api.getMusicUrl as any)(musicInfo, '128k').promise) as { url: string }
+    if (!res?.url || !/^https?:/.test(res.url)) throw new Error('返回地址非法：' + String(res?.url).slice(0, 60))
+    const audio = await fetch(res.url, { headers: { Range: 'bytes=0-2047' } })
+    if (!audio.ok && audio.status !== 206) throw new Error('音频不可下载 HTTP ' + audio.status)
+    return `HTTP ${audio.status} ${audio.headers.get('content-type') ?? ''}`
+  }, { soft: true, timeout: 45000 }))
+
   items.push(await runItem('播放链路', async() => {
     const flag = await getData<boolean>('@lx_ci_playback').catch(() => null)
     if (flag !== true) return 'skipped（仅 CI 开启）'

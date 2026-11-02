@@ -209,6 +209,8 @@
   "player__error": "音频加载出错，5 秒后切换下一首",
   "player__getting_url": "歌曲链接获取中...",
   "player__getting_url_delay_retry": "服务器繁忙，{time} 秒后重试...",
+  "player__no_usable_source": "未配置可用音源，无法获取播放地址。请到「设置 → 基本设置 → 音乐来源」导入音源",
+  "player__get_url_failed_stop": "连续获取播放地址失败，已停止自动跳过，请检查音源或网络",
   "player__loading": "音乐加载中...",
   "player__refresh_url": "URL 过期，正在刷新 URL...",
   "player_cache_migrating": "歌曲缓存迁移中，请稍等 ⌛️",

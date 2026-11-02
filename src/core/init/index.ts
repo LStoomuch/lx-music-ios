@@ -9,6 +9,7 @@ import initSync from './sync'
 import initCommonState from './common'
 import { initDeeplink } from './deeplink'
 import { setApiSource } from '@/core/apiSource'
+import { ensureBuiltinUserApi } from '@/core/builtinSource'
 import commonActions from '@/store/common/action'
 import settingState from '@/store/setting/state'
 import { checkUpdate } from '@/core/version'
@@ -48,7 +49,16 @@ export default async() => {
   await initUserApi(setting)
   bootLog('User Api inited.')
 
-  setApiSource(setting['common.apiSource'])
+  // 没有任何自定义源时补一份内置源，避免「装好点播放没反应」。
+  // ensureBuiltinUserApi 内部会把 common.apiSource 一并写回设置。
+  try {
+    await ensureBuiltinUserApi()
+    bootLog('Builtin user api ensured.')
+  } catch (err) {
+    console.log('ensure builtin user api failed', err)
+  }
+
+  setApiSource(settingState.setting['common.apiSource'])
   bootLog('Api inited.')
 
   registerPlaybackService()
