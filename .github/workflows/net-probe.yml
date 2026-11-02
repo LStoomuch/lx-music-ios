@@ -1,0 +1,20 @@
+name: Net probe
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Probe music source endpoints
+        run: |
+          set +e
+          for u in https://api.music.lerd.dpdns.org/init.conf \
+                   https://music.163.com/api/search/get/web?s=test\&type=1\&limit=1 \
+                   http://search.kuwo.cn/r.s?client=kt\&all=test\&pn=0\&rn=1\&encoding=utf8\&rformat=json \
+                   http://mobi.kuwo.cn/mobi.s?user=0\&f=web\&type=convert_url_with_sign\&rid=228908\&br=128kmp3 ; do
+            echo "=== $u"
+            curl -sS -m 15 -o /tmp/out -w 'HTTP %{http_code} time=%{time_total}s\n' "$u"
+            head -c 120 /tmp/out; echo
+          done
