@@ -137,7 +137,10 @@ const getMusicPlayUrl = async(musicInfo: LX.Music.MusicInfo | LX.Download.ListIt
 // 在没有可用音源时会变成「一直闪、一直跳、永远没声音」的死循环。
 // 这里改成：同一次播放尝试里失败两次就停下并给出明确原因。
 let playUrlFailCount = 0
-const isSourceMissingError = (message: string) => /Api is not found|source init failed|api not found/i.test(message)
+// preload 会对脚本返回的地址做校验（必须是 1~2048 字符的 http(s) 串），
+// 不通过时只抛一句 "failed"。这属于「音源拿不出可用地址」，按音源问题处理，
+// 否则会先白跳一首歌（底部闪一下）才停，正是用户反馈的那个现象。
+const isSourceMissingError = (message: string) => /Api is not found|source init failed|api not found|^failed$/i.test(message)
 
 export const setMusicUrl = (musicInfo: LX.Music.MusicInfo | LX.Download.ListItem, isRefresh?: boolean) => {
   // addLoadTimeout()
