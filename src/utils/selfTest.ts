@@ -202,7 +202,16 @@ export const runSelfTest = async(): Promise<SelfTestItem[]> => {
     } catch {
       // 播放器可能已被正常流程初始化，此时重复 setup 会抛错，属预期
     }
-    try { await Promise.resolve(TrackPlayer.reset()) } catch { /* 清掉上一轮残留队列 */ }
+    // 还原线上真实路径：队列里先放一首，再 add 新曲目 → skip 到它 → play。
+    // 原生 reset() 只是 stop()，并不清空队列、也不设置 currentItem，
+    // 之前 reset 后直接 play 会永远停在 loading（那是用例写错，不是应用缺陷）。
+    await withTimeout(Promise.resolve(TrackPlayer.add([{
+      id: 'ci-dummy',
+      url,
+      title: '占位音轨',
+      artist: 'CI',
+      duration: 2,
+    }])), 8000, 'add(dummy)')
     await withTimeout(Promise.resolve(TrackPlayer.add([{
       id: 'ci-selftest',
       url,
@@ -210,6 +219,10 @@ export const runSelfTest = async(): Promise<SelfTestItem[]> => {
       artist: 'CI',
       duration: 2,
     }])), 8000, 'add')
+    const ciQueue = await withTimeout(Promise.resolve(TrackPlayer.getQueue()), 8000, 'getQueue') as any[]
+    const ciIndex = ciQueue.findIndex((t: any) => t?.id === 'ci-selftest')
+    if (ciIndex < 0) throw new Error(`队列里找不到刚加入的音轨（队列=${ciQueue.length}）`)
+    await withTimeout(Promise.resolve(TrackPlayer.skip(ciIndex)), 8000, 'skip')
     await withTimeout(Promise.resolve(TrackPlayer.play()), 8000, 'play')
     // 内置文件只有 2 秒，播完位置可能归零，必须轮询取峰值而不是只采样一次
     let state = ''
@@ -222,7 +235,7 @@ export const runSelfTest = async(): Promise<SelfTestItem[]> => {
       if (Number.isFinite(pos) && pos > position) position = pos
       if (position > 0.5) break
     }
-    try { await Promise.resolve(TrackPlayer.reset()) } catch { /* 忽略 */ }
+    // 这里不再调用 reset()：它只会 stop()，会让下一项「自动播放」继承 loading 状态
     if (!(position > 0)) throw new Error(`播放位置未前进：state=${state} pos=${position}`)
     return `state=${state} 位置=${position.toFixed(2)}s`
   }, { soft: true, timeout: 30000 }))
