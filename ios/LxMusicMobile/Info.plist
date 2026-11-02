@@ -30,9 +30,12 @@
 	<!-- 自定义源 / 同步服务可能使用 http 或自签证书，侧载场景下放开 ATS -->
 	<key>NSAppTransportSecurity</key>
 	<dict>
+		<!-- 只有 NSAllowsArbitraryLoads 生效，iOS 10+ 的规则是：
+		     一旦同时出现 NSAllowsLocalNetworking / NSAllowsArbitraryLoadsInWebContent / ForMedia，
+		     NSAllowsArbitraryLoads 会被系统忽略。音乐源里大量接口和 CDN 是 http 明文
+		     （search.kuwo.cn、mobi.kuwo.cn、kw-er.kuwo.cn 等），因此这里不能再出现细粒度键，
+		     否则所有 http 请求都会被 ATS 直接拒绝，表现为 "Network request failed"、无法播放。 -->
 		<key>NSAllowsArbitraryLoads</key>
-		<true/>
-		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
 
