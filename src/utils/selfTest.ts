@@ -189,7 +189,7 @@ export const runSelfTest = async(): Promise<SelfTestItem[]> => {
     const flag = await getData<boolean>('@lx_ci_source').catch(() => null)
     if (flag !== true) return 'skipped（仅 CI 开启）'
     // 音源脚本在独立 JSContext 里异步初始化，这里等它就绪（最多 20s）
-    const deadline = Date.now() + 20000
+    const deadline = Date.now() + 12000
     let api = (global as any).lx?.apis?.kw
     while (!api?.getMusicUrl && Date.now() < deadline) {
       await new Promise<void>((resolve) => { setTimeout(resolve, 500) })
