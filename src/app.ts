@@ -3,6 +3,7 @@ import { init as initLog } from '@/utils/log'
 import { bootLog, getBootLog } from '@/utils/bootLog'
 import '@/config/globalData'
 import { getFontSize } from '@/utils/data'
+import { getData } from '@/plugins/storage'
 import { exitApp, hideBootOverlay } from './utils/nativeModules/utils'
 import { windowSizeTools } from './utils/windowSizeTools'
 import { listenLaunchEvent } from '@/navigation/regLaunchedEvent'
@@ -75,6 +76,36 @@ const scheduleSelfTest = () => {
     })
   }, 2500)
 }
+/**
+ * CI 专用：自动「搜索 → 加入列表 → 播放」一首真实歌曲。
+ * 用户反馈的问题恰好发生在点播放之后（底部一直闪、没有声音），
+ * 只验证界面渲染是不够的，必须让机器自己把这条链路走一遍。
+ * 仅在 @lx_ci_autoplay 为 true 时执行，生产包不会触发。
+ */
+const scheduleCiAutoplay = () => {
+  setTimeout(() => {
+    void (async() => {
+      const flag = await getData<boolean>('@lx_ci_autoplay').catch(() => null)
+      if (flag !== true) return
+      try {
+        const { search } = await import('@/core/search/music')
+        const list = await search('告白气球', 1, 'kw')
+        diag(`CI 自动播放：搜索到 ${list.length} 首`)
+        if (!list.length) return
+        const { addListMusics } = await import('@/core/list')
+        const { playListById } = await import('@/core/player/player')
+        const { LIST_IDS } = await import('@/config/constant')
+        const target = list[0]
+        await addListMusics(LIST_IDS.DEFAULT, [target])
+        diag(`CI 自动播放：${target.name} - ${target.singer}`)
+        await playListById(LIST_IDS.DEFAULT, target.id)
+        diag('CI 自动播放：已调用播放')
+      } catch (err: any) {
+        diag(`CI 自动播放失败: ${err?.message ?? err}`)
+      }
+    })()
+  }, 8000)
+}
 // ==== 诊断代码结束 ====
 
 console.log('starting app...')
@@ -121,6 +152,7 @@ void Promise.all([getFontSize(), windowSizeTools.init()]).then(async([fontSize])
       if (isIos) setTimeout(hideBootOverlay, 3000)
       void handlePushedHomeScreen()
       if (isIos) scheduleSelfTest()
+      if (isIos) scheduleCiAutoplay()
     }).catch((err: any) => {
       diag(`pushHomeScreen 失败: ${err?.message ?? err}`)
       showBootError('Error', err.message)

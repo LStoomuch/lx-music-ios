@@ -25,7 +25,7 @@ on:
       shot_times:
         description: '截图时刻（秒，逗号分隔，相对启动）'
         required: false
-        default: '4,10,18,30,45'
+        default: '6,12,20,35,50'
 
 jobs:
   simulator:
@@ -92,7 +92,7 @@ jobs:
 
       - name: Boot simulator, launch app, capture evidence
         env:
-          SHOT_TIMES: ${{ github.event.inputs.shot_times || '4,10,18,30,45' }}
+          SHOT_TIMES: ${{ github.event.inputs.shot_times || '6,12,20,35,50' }}
         run: |
           set -uo pipefail
           mkdir -p artifacts
@@ -172,8 +172,10 @@ jobs:
           data['@lx_ci_playback'] = 'true'
           # 音源链路自检：内置源初始化 → 取真实播放地址 → 校验音频可下载
           data['@lx_ci_source'] = 'true'
+          # 自动「搜索→播放」一首真实歌曲：用户的问题就出在点播放之后
+          data['@lx_ci_autoplay'] = 'true'
           io.open(p, 'w', encoding='utf-8').write(json.dumps(data, ensure_ascii=False))
-          print('已预置 @cheat_tip / @setting_v1(common.isAgreePact) / @lx_ci_playback，现有键数 =', len(data))
+          print('已预置 @cheat_tip / @setting_v1 / @lx_ci_playback / @lx_ci_source / @lx_ci_autoplay，现有键数 =', len(data))
           PY
           cat "$MF" | head -c 400; echo
 
