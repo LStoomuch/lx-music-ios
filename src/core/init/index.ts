@@ -9,7 +9,7 @@ import initSync from './sync'
 import initCommonState from './common'
 import { initDeeplink } from './deeplink'
 import { setApiSource } from '@/core/apiSource'
-import { ensureBuiltinUserApi } from '@/core/builtinSource'
+import { ensureBuiltinUserApi, builtinSourceDiag } from '@/core/builtinSource'
 import commonActions from '@/store/common/action'
 import settingState from '@/store/setting/state'
 import { checkUpdate } from '@/core/version'
@@ -53,6 +53,7 @@ export default async() => {
   // ensureBuiltinUserApi 内部会把 common.apiSource 一并写回设置。
   try {
     await ensureBuiltinUserApi()
+    ;(global as any).__lx_source_diag = builtinSourceDiag
     bootLog('Builtin user api ensured.')
   } catch (err) {
     console.log('ensure builtin user api failed', err)

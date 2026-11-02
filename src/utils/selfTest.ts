@@ -28,6 +28,7 @@ import {
 } from '@/utils/nativeModules/crypto'
 import { defaultUrl } from '@/config'
 import { getData } from '@/plugins/storage'
+import settingState from '@/store/setting/state'
 
 export interface SelfTestItem {
   name: string
@@ -195,7 +196,16 @@ export const runSelfTest = async(): Promise<SelfTestItem[]> => {
       await new Promise<void>((resolve) => { setTimeout(resolve, 500) })
       api = (global as any).lx?.apis?.kw
     }
-    if (!api?.getMusicUrl) throw new Error(`音源未就绪（${String((global as any).lx?.apis && Object.keys((global as any).lx.apis))}）`)
+    if (!api?.getMusicUrl) {
+      const st = (global as any).__lx_source_state
+      const bk = (global as any).__lx_source_diag
+      throw new Error(
+        `音源未就绪[apiSource=${String(settingState.setting['common.apiSource'] ?? '')}` +
+        ` list=${String(bk?.list)} pick=${String(bk?.picked)} why=${String(bk?.reason)}` +
+        ` init=${st ? `${st.status}/${st.errorMessage}` : 'no-event'}` +
+        ` apis=${Object.keys((global as any).lx?.apis ?? {}).join(',') || '空'}]`,
+      )
+    }
     const musicInfo = {
       songmid: '228908',
       hash: '228908',

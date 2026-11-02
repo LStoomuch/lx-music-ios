@@ -72,6 +72,8 @@ export default async(setting: LX.AppSetting) => {
     else target.reject(new Error(errorMessage ?? 'failed'))
   }
   const handleStateChange = ({ status, errorMessage, info }: InitParams) => {
+    // 自检会读这个，用来解释「音源为什么没就绪」
+    ;(global as any).__lx_source_state = { status, errorMessage: errorMessage ?? '', id: info?.id ?? '' }
     // console.log(status, message, info)
     setUserApiStatus(status, errorMessage)
     if (!info || info.id !== settingState.setting['common.apiSource']) return
