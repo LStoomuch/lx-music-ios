@@ -56,7 +56,7 @@ const createDelayNextTimeout = (delay: number) => {
     addDelayNextTimeout,
   }
 }
-const { addDelayNextTimeout, clearDelayNextTimeout } = createDelayNextTimeout(5000)
+const { clearDelayNextTimeout } = createDelayNextTimeout(5000)
 const { addDelayNextTimeout: addLoadTimeout, clearDelayNextTimeout: clearLoadTimeout } = createDelayNextTimeout(100000)
 
 const createGettingUrlId = (musicInfo: LX.Music.MusicInfo | LX.Download.ListItem) => {
@@ -134,9 +134,15 @@ const getMusicPlayUrl = async(musicInfo: LX.Music.MusicInfo | LX.Download.ListIt
 
 // 连续取播放地址失败计数。
 // 旧逻辑每次失败都会 addDelayNextTimeout()（5 秒后自动下一首），
-// 在没有可用音源时会变成「一直闪、一直跳、永远没声音」的死循环。
-// 这里改成：同一次播放尝试里失败两次就停下并给出明确原因。
+// 在没有可用音源/网络不通时会变成「一直闪、一直跳、永远没声音」的死循环。
+// 这里改成：连续失败两次就停下并给出明确原因。
+// 注意：这个计数不能被「切歌」清零，否则熔断永远触发不到——
+// 失败驱动的自动切歌正是要把计数累加起来的场景。
 let playUrlFailCount = 0
+const MAX_PLAY_URL_FAIL = 2
+export const resetPlayUrlFailCount = () => {
+  playUrlFailCount = 0
+}
 // preload 会对脚本返回的地址做校验（必须是 1~2048 字符的 http(s) 串），
 // 不通过时只抛一句 "failed"。这属于「音源拿不出可用地址」，按音源问题处理，
 // 否则会先白跳一首歌（底部闪一下）才停，正是用户反馈的那个现象。
@@ -156,18 +162,19 @@ export const setMusicUrl = (musicInfo: LX.Music.MusicInfo | LX.Download.ListItem
     const message = (err?.message as string) ?? ''
     global.app_event.error()
     if (isSourceMissingError(message)) {
-      playUrlFailCount = 0
       setStatusText(global.i18n.t('player__no_usable_source'))
       toast(global.i18n.t('player__no_usable_source'), 'long')
       return
     }
     playUrlFailCount++
-    if (playUrlFailCount >= 2) {
+    // 连续失败到上限：停在这里并说明原因。
+    // 绝不能在这里排「自动下一首」——取不到地址时跳歌只会跳进下一首继续失败，
+    // 表现就是底部播放栏一直闪、永远没声音（用户反馈的那个现象）。
+    if (playUrlFailCount >= MAX_PLAY_URL_FAIL) {
       setStatusText(global.i18n.t('player__get_url_failed_stop'))
       return
     }
     setStatusText(message)
-    addDelayNextTimeout()
   }).finally(() => {
     if (musicInfo === playerState.playMusicInfo.musicInfo) {
       global.lx.gettingUrlId = ''
@@ -271,7 +278,8 @@ const handlePlay = async() => {
   }
 
   global.lx.isPlayedStop &&= false
-  playUrlFailCount = 0
+  // 这里不能重置 playUrlFailCount：自动切歌也是走 handlePlay()，
+  // 清零会让「连续失败就停」的熔断永远触发不到，形成 失败→切歌→再失败 的死循环。
   resetRandomNextMusicInfo()
 
   if (global.lx.restorePlayInfo) {
@@ -285,7 +293,8 @@ const handlePlay = async() => {
 
   if (!musicInfo) return
 
-  await setStop()
+  // 队列里什么都没有、也没在播时，native stop() 只会让播放栏白抖一下
+  if (!isEmpty()) await setStop()
   global.app_event.pause()
 
   clearDelayNextTimeout()
@@ -310,6 +319,8 @@ export const playListById = async(listId: string, id: string) => {
   setPlayMusicInfo(listId, musicInfo)
   if (settingState.setting['player.isAutoCleanPlayedList'] || prevListId != listId) clearPlayedList()
   clearTempPlayeList()
+  // 用户主动点播：重新给满容错次数
+  resetPlayUrlFailCount()
   await handlePlay()
 }
 
@@ -324,6 +335,8 @@ export const playList = async(listId: string, index: number) => {
   setPlayMusicInfo(listId, getList(listId)[index])
   if (settingState.setting['player.isAutoCleanPlayedList'] || prevListId != listId) clearPlayedList()
   clearTempPlayeList()
+  // 用户主动点播：重新给满容错次数
+  resetPlayUrlFailCount()
   await handlePlay()
 }
 
@@ -435,12 +448,37 @@ const handlePlayNext = async(playMusicInfo: LX.Player.PlayMusicInfo) => {
   setPlayMusicInfo(playMusicInfo.listId, playMusicInfo.musicInfo, playMusicInfo.isTempPlay)
   await handlePlay()
 }
+// 「自动切歌风暴」熔断：正常情况下自动切歌由「一首歌播完」触发，
+// 频率不可能高。若短时间内连续自动切了很多次，说明链路里有人在自激
+// （典型是取地址失败→自动下一首→再失败），此时必须停下来，
+// 否则底部播放栏会一直闪、永远出不了声。
+const autoNextTimes: number[] = []
+const AUTO_NEXT_WINDOW = 20000
+const AUTO_NEXT_LIMIT = 6
+const isAutoNextStorm = () => {
+  const now = Date.now()
+  while (autoNextTimes.length && now - autoNextTimes[0] > AUTO_NEXT_WINDOW) autoNextTimes.shift()
+  autoNextTimes.push(now)
+  return autoNextTimes.length > AUTO_NEXT_LIMIT
+}
+export const resetAutoNextStorm = () => { autoNextTimes.length = 0 }
+
 /**
  * 下一曲
  * @param isAutoToggle 是否自动切换
  * @returns
  */
 export const playNext = async(isAutoToggle = false): Promise<void> => {
+  if (isAutoToggle) {
+    if (isAutoNextStorm()) {
+      console.log('auto next storm, stop')
+      setStatusText(global.i18n.t('player__get_url_failed_stop'))
+      return
+    }
+  } else {
+    resetAutoNextStorm()
+  }
+
   if (playerState.tempPlayList.length) { // 如果稍后播放列表存在歌曲则直接播放改列表的歌曲
     const playMusicInfo = playerState.tempPlayList[0]
     removeTempPlayList(0)
@@ -645,14 +683,7 @@ export const pause = async() => {
 /**
  * 停止播放
  */
-// 【临时埋点】定位「stop/pause/seek(0) 每秒上千次」的调用来源，拿到栈就删
-let stopTraceCount = 0
 export const stop = async() => {
-  if (stopTraceCount < 12) {
-    stopTraceCount++
-    const stack = (new Error('trace').stack ?? '').split('\n').slice(1, 7).map(s => s.trim()).join(' <- ')
-    console.log(`[LXSTOP#${stopTraceCount}] ${stack}`)
-  }
   await setStop()
   setTimeout(() => {
     global.app_event.stop()
@@ -664,6 +695,9 @@ export const stop = async() => {
  */
 export const togglePlay = () => {
   global.lx.isPlayedStop &&= false
+  // 用户主动点播放/暂停：重置失败熔断，让「再试一次」真的能再试
+  resetPlayUrlFailCount()
+  resetAutoNextStorm()
   if (playerState.isPlay) {
     void pause()
   } else {

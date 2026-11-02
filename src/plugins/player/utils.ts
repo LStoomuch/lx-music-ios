@@ -164,16 +164,27 @@ export const setResource = (musicInfo: LX.Player.PlayMusic, url: string, duratio
 export const setPlay = async() => TrackPlayer.play()
 export const getPosition = async() => TrackPlayer.getPosition()
 export const getDuration = async() => TrackPlayer.getDuration()
-// 【临时埋点】同 player.ts 的 LXSTOP，定位谁是每秒上千次 stop 的发起者，拿到栈即删
-let setStopTraceCount = 0
+// iOS 原生 stop() 的实现是 pause() + seek(to: 0)，每次调用都会让界面下方的
+// 播放栏跟着重绘一次。一旦上层因为「取地址失败 → 自动切歌」之类的链路把它
+// 高频重复调用，用户看到的就是「底部一直闪」。
+// 这里做两件事：合并并发调用 + 限制最小间隔，保证「停一次」真的只停一次。
+let stopInFlight: Promise<void> | null = null
+let lastStopAt = 0
+const STOP_MIN_INTERVAL = 300
 export const setStop = async() => {
-  if (setStopTraceCount < 12) {
-    setStopTraceCount++
-    const stack = (new Error('trace').stack ?? '').split('\n').slice(1, 7).map(s => s.trim()).join(' <- ')
-    console.log(`[LXSETSTOP#${setStopTraceCount}] ${stack}`)
-  }
-  await TrackPlayer.stop()
-  if (!isEmpty()) await TrackPlayer.skipToNext()
+  if (stopInFlight) return stopInFlight
+  const now = Date.now()
+  if (now - lastStopAt < STOP_MIN_INTERVAL) return
+  lastStopAt = now
+  stopInFlight = (async() => {
+    try {
+      await TrackPlayer.stop()
+      if (!isEmpty()) await TrackPlayer.skipToNext()
+    } finally {
+      stopInFlight = null
+    }
+  })()
+  return stopInFlight
 }
 export const setLoop = async(loop: boolean) => TrackPlayer.setRepeatMode(loop ? RepeatMode.Off : RepeatMode.Track)
 

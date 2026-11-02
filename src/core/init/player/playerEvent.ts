@@ -1,7 +1,6 @@
 import { playNext, setMusicUrl } from '@/core/player/player'
 import { setStatusText } from '@/core/player/playStatus'
 import { getPosition, isEmpty, setStop } from '@/plugins/player'
-import { isActive } from '@/utils/tools'
 import BackgroundTimer from 'react-native-background-timer'
 import playerState from '@/store/player/state'
 import { setNowPlayTime } from '@/core/player/progress'
@@ -45,16 +44,6 @@ export default () => {
     if (!delayNextTimeout) return
     BackgroundTimer.clearTimeout(delayNextTimeout)
     delayNextTimeout = null
-  }
-  const addDelayNextTimeout = () => {
-    clearDelayNextTimeout()
-    delayNextTimeout = BackgroundTimer.setTimeout(() => {
-      if (global.lx.isPlayedStop) {
-        setStatusText('')
-        return
-      }
-      void playNext(true)
-    }, 5000)
   }
 
   const handleLoadstart = () => {
@@ -105,13 +94,10 @@ export default () => {
     }
     if (!isEmpty()) void setStop()
 
-    if (isActive()) {
-      setStatusText(global.i18n.t('player__error'))
-      setTimeout(addDelayNextTimeout)
-    } else {
-      console.warn('error skip to next')
-      void playNext(true)
-    }
+    // 播放出错时不要自动跳下一首：绝大多数出错是「这首的地址拿不到/被拒绝」，
+    // 跳过去只会重演一次，表现为底部播放栏一直闪、永远没声音。
+    // 停在这里把原因显示出来，让用户自己决定换源还是跳过。
+    setStatusText(global.i18n.t('player__error'))
   }
 
   const handleSetPlayInfo = () => {
