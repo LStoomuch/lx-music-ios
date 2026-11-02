@@ -197,7 +197,8 @@ export const runSelfTest = async(): Promise<SelfTestItem[]> => {
     if (flag !== true) return 'skipped（仅 CI 开启）'
     const assetUri = resolveDefaultTrackUrl()
     if (!assetUri) throw new Error('内置音频未解析出 uri')
-    const filePath = decodeURIComponent(assetUri.replace(/^file:///////, ''))
+    // 去掉 file:// 前缀即可得到可直接 stat 的绝对路径（不要用正则，容易转义出错）
+    const filePath = decodeURIComponent(assetUri.startsWith('file://') ? assetUri.slice(7) : assetUri)
     const { addListMusics } = await import('@/core/list')
     const { playListById } = await import('@/core/player/player')
     const { LIST_IDS } = await import('@/config/constant')
@@ -209,7 +210,7 @@ export const runSelfTest = async(): Promise<SelfTestItem[]> => {
       interval: '00:02',
       meta: { songId: filePath, albumName: '', filePath, ext: 'mp3' },
     } as LX.Music.MusicInfoLocal
-    await addListMusics(LIST_IDS.DEFAULT, [info])
+    await addListMusics(LIST_IDS.DEFAULT, [info], 'top')
     await playListById(LIST_IDS.DEFAULT, info.id)
     // 内置文件只有 2 秒，播完位置会归零，必须轮询取峰值而不是只采样一次
     const TrackPlayer = (await import('react-native-track-player')).default
@@ -237,7 +238,7 @@ export const runSelfTest = async(): Promise<SelfTestItem[]> => {
     const { playListById } = await import('@/core/player/player')
     const { LIST_IDS } = await import('@/config/constant')
     const target = list[0]
-    await addListMusics(LIST_IDS.DEFAULT, [target])
+    await addListMusics(LIST_IDS.DEFAULT, [target], 'top')
     await playListById(LIST_IDS.DEFAULT, target.id)
     await new Promise<void>((resolve) => { setTimeout(resolve, 6000) })
     const TrackPlayer = (await import('react-native-track-player')).default
