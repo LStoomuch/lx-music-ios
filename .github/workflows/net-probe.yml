@@ -10,11 +10,22 @@ jobs:
       - name: Probe music source endpoints
         run: |
           set +e
-          for u in https://api.music.lerd.dpdns.org/init.conf \
-                   https://music.163.com/api/search/get/web?s=test\&type=1\&limit=1 \
-                   http://search.kuwo.cn/r.s?client=kt\&all=test\&pn=0\&rn=1\&encoding=utf8\&rformat=json \
-                   http://mobi.kuwo.cn/mobi.s?user=0\&f=web\&type=convert_url_with_sign\&rid=228908\&br=128kmp3 ; do
-            echo "=== $u"
-            curl -sS -m 15 -o /tmp/out -w 'HTTP %{http_code} time=%{time_total}s\n' "$u"
-            head -c 120 /tmp/out; echo
+          echo "===== 1) 取址接口（内置音源的唯一依赖）"
+          for u in "https://antiserver.kuwo.cn/anti.s?type=convert_url&format=mp3&response=url&rid=MUSIC_228908" \
+                   "https://mobi.kuwo.cn/mobi.s?f=web&source=kwplayer_ar_9.3.0.1_B_jiagu.apk&type=convert_url_with_sign&br=320kmp3&rid=228908" \
+                   "https://music.163.com/api/search/get/web?s=test&type=1&limit=1" ; do
+            echo "--- $u"
+            curl -sS -m 20 -o /tmp/out -w 'HTTP %{http_code} time=%{time_total}s\n' "$u"
+            head -c 160 /tmp/out; echo
+          done
+
+          echo "===== 2) 拿到地址后能否真的下到音频字节"
+          U=$(curl -sS -m 20 "https://antiserver.kuwo.cn/anti.s?type=convert_url&format=mp3&response=url&rid=MUSIC_228908")
+          echo "url=$U"
+          curl -sS -m 20 -r 0-2047 -o /tmp/a -w 'audio HTTP %{http_code} type=%{content_type} size=%{size_download}\n' "$U"
+
+          echo "===== 3) 三首样本的覆盖率"
+          for id in 228908 64958430 215305835 ; do
+            U2=$(curl -sS -m 20 "https://antiserver.kuwo.cn/anti.s?type=convert_url&format=mp3&response=url&rid=MUSIC_$id")
+            echo "rid=$id -> ${U2:0:60}"
           done

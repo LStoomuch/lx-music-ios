@@ -299,10 +299,12 @@ export const runSelfTest = async(): Promise<SelfTestItem[]> => {
     // 先探一下音源服务端在设备侧是否可达，失败时能区分「网络不通」和「脚本报错」
     let net = ''
     try {
-      const ping = await fetch('https://api.music.lerd.dpdns.org/init.conf')
-      net = `init.conf=${ping.status}`
+      // 直接用内置音源真正依赖的取址接口探活：能回出 http(s) 地址就说明链路通
+      const ping = await fetch('https://antiserver.kuwo.cn/anti.s?type=convert_url&format=mp3&response=url&rid=MUSIC_228908')
+      const txt = (await ping.text()).trim()
+      net = `anti=${ping.status}${/^https?:\/\//.test(txt) ? '(url)' : '(空)'}`
     } catch (err) {
-      net = `init.conf=FAIL(${errText(err)})`
+      net = `anti=FAIL(${errText(err)})`
     }
     // 分阶段定位：音源脚本自己会发起「接口请求 → 二次请求」，最后我们还要下载音频，
     // 任何一步失败都只报一句 "Network request failed"，必须带上阶段才知道卡在哪。
